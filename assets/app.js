@@ -2319,7 +2319,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
         sub={isVariantB ? 'Variante B da visao operacional das notas em analise no portal' : 'Visao operacional das notas em analise no portal'}
         actions={
           <>
-            {isVariantB && onToggleSidebar ? (
+            {onToggleSidebar ? (
               <button
                 className="btn btn-ghost btn-sm"
                 onClick={onToggleSidebar}
@@ -3594,12 +3594,13 @@ function App() {
   }, [baseUrl]);
 
   useEffect(() => {
-    if (active === 'fila_trabalho_b') setDesktopSidebarVisible(false);
-    else setDesktopSidebarVisible(true);
+    if (active !== 'fila_trabalho' && active !== 'fila_trabalho_b') {
+      setDesktopSidebarVisible(true);
+    }
   }, [active]);
 
   const navigate = k => { setActive(k); setMobileOpen(false); };
-  const isFilaBActive = active === 'fila_trabalho_b';
+  const isQueuePageActive = active === 'fila_trabalho' || active === 'fila_trabalho_b';
 
   const sections = [...new Set(MENU.map(m => m.section))];
 
@@ -3645,7 +3646,7 @@ function App() {
     dashboard:    <DashboardPage {...pageProps} />,
     execucao:     <ExecucaoPage {...pageProps} />,
     agendamentos: <AgendamentosPage {...pageProps} />,
-    fila_trabalho:<FilaDeTrabalhoPage {...pageProps} navigate={navigate} variant="a" />,
+    fila_trabalho:<FilaDeTrabalhoPage {...pageProps} navigate={navigate} variant="a" sidebarVisible={desktopSidebarVisible} onToggleSidebar={() => setDesktopSidebarVisible(v => !v)} />,
     fila_trabalho_b:<FilaDeTrabalhoPage {...pageProps} navigate={navigate} variant="b" sidebarVisible={desktopSidebarVisible} onToggleSidebar={() => setDesktopSidebarVisible(v => !v)} />,
     processos:    <ProcessosPage {...pageProps} />,
     nfse:         <NFSePage {...pageProps} />,
@@ -3660,7 +3661,7 @@ function App() {
   const showApiMissing = !baseUrl && active !== 'configuracoes';
 
   return (
-    <div className={cn('app-shell', isFilaBActive && 'focus-mode', isFilaBActive && !desktopSidebarVisible && 'sidebar-hidden')}>
+    <div className={cn('app-shell', isQueuePageActive && 'focus-mode', isQueuePageActive && !desktopSidebarVisible && 'sidebar-hidden')}>
       {/* Desktop sidebar */}
       {desktopSidebarVisible && (
         <aside className="sidebar">
@@ -3728,4 +3729,3 @@ function App() {
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-
