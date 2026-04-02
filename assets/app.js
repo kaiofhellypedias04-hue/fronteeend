@@ -798,7 +798,7 @@ function QueueAnalysisContent({
           <div className="queue-detail-row"><span>Status</span><StatusBadge value={queueStatus} /></div>
           <div className="queue-detail-row"><span>Prioridade</span><QueuePriorityBadge value={selected.queue_prioridade} /></div>
           <div className="queue-detail-row"><span>SLA</span><QueueSlaBadge sla={selected.queue_sla} /></div>
-          <div className="queue-detail-row"><span>Divergência</span><Badge tone={selected.queue_divergencia === 'Sem divergência' ? 'success' : 'warn'}>{selected.queue_divergencia}</Badge></div>
+          <div className="queue-detail-row"><span>Divergência</span><Badge tone={selected.queue_divergencia_final ? 'warn' : 'success'}>{selected.queue_divergencia}</Badge></div>
         </div>
       </div>
 
@@ -2527,7 +2527,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                         <td className="mono right">{fmtMoney(item.valor_total)}</td>
                         <td><StatusBadge value={item.queue_status} /></td>
                         <td>
-                          <Badge tone={item.queue_divergencia === 'Sem divergência' ? 'success' : 'warn'}>
+                          <Badge tone={item.queue_divergencia_final ? 'warn' : 'success'}>
                             {item.queue_divergencia}
                           </Badge>
                         </td>
