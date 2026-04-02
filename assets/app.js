@@ -2500,6 +2500,9 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                       <th>Empresa</th>
                       <th>Prestador</th>
                       <th>Valor</th>
+                      <th>Simples Nacional / XML</th>
+                      <th>Consulta Simples API</th>
+                      <th>Status Simples Nacional</th>
                       <th>Status</th>
                       <th>Divergência</th>
                       <th>Prioridade</th>
@@ -2525,6 +2528,9 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                           {item.queue_prestador}
                         </td>
                         <td className="mono right">{fmtMoney(item.valor_total)}</td>
+                        <td>{item.simples_nacional || '\u2014'}</td>
+                        <td>{item.consulta_simples_api || '\u2014'}</td>
+                        <td>{item.status_simples_nacional || '\u2014'}</td>
                         <td><StatusBadge value={item.queue_status} /></td>
                         <td>
                           <Badge tone={item.queue_divergencia_final ? 'warn' : 'success'}>
@@ -3729,3 +3735,4 @@ function App() {
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+
