@@ -192,6 +192,7 @@ function normalizeQueueStatus(value) {
   const raw = String(value || '').toLowerCase();
   if (raw.includes('diverg')) return 'divergente';
   if (raw.includes('corret')) return 'correta';
+  if (raw.includes('cancel')) return 'cancelada';
   if (raw.includes('pend')) return 'pendente';
   return value || 'pendente';
 }
@@ -544,7 +545,7 @@ function StatusBadge({ value }) {
   const map = {
     ok: 'success', valid: 'success', active: 'success', completed: 'success', correta: 'success',
     running: 'info', queued: 'warn',
-    failed: 'danger', divergente: 'danger',
+    failed: 'danger', divergente: 'danger', cancelada: 'neutral',
   };
   const tone = map[value?.toLowerCase()] || 'neutral';
   return <Badge tone={tone}>{value || 'n/a'}</Badge>;
@@ -876,6 +877,7 @@ function QueueAnalysisContent({
               <option value="pendente">Pendente</option>
               <option value="divergente">Divergente</option>
               <option value="correta">Correta</option>
+              <option value="cancelada">Cancelada</option>
             </select>
           </div>
           <div className="field" style={{ marginTop: 12 }}>
