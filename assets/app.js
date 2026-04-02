@@ -2670,7 +2670,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
         </div>
       </Modal>
 
-      {isVariantB && selected ? (
+      {selected ? (
         <>
           <div className="queue-drawer-backdrop" onClick={() => setSelected(null)} />
           <aside className="queue-drawer">
@@ -2703,26 +2703,6 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
           </aside>
         </>
       ) : null}
-
-      <Modal open={!isVariantB && !!selected} title={selected ? `Analisar nota - ${selected.queue_numero_nota}` : 'Analisar nota'} onClose={() => setSelected(null)} wide>
-        <QueueAnalysisContent
-          selected={selected}
-          alertMeta={alertMeta}
-          tributosComparativo={tributosComparativo}
-          baseUrl={baseUrl}
-          toast={toast}
-          statusFila={statusFila}
-          setStatusFila={setStatusFila}
-          prioridadeFila={prioridadeFila}
-          setPrioridadeFila={setPrioridadeFila}
-          responsavelFila={responsavelFila}
-          setResponsavelFila={setResponsavelFila}
-          obsInterna={obsInterna}
-          setObsInterna={setObsInterna}
-          salvarObservacao={salvarObservacao}
-          savingObs={savingObs}
-        />
-      </Modal>
     </div>
   );
 }
