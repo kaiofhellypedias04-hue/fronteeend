@@ -2420,6 +2420,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                 <option value="divergente">Divergente</option>
                 <option value="correta">Correta</option>
                 <option value="pendente">Pendente</option>
+                <option value="cancelada">Cancelada</option>
               </select>
             </div>
             <div className="field">
