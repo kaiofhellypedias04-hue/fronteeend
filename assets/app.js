@@ -778,6 +778,9 @@ function QueueAnalysisContent({
   salvarObservacao, savingObs,
 }) {
   if (!selected) return null;
+
+  const queueStatus = selected.status_fila_final || selected.queue_status || selected.status || 'pendente';
+
   return (
     <div className="queue-detail">
       <div className="queue-detail-grid">
@@ -792,7 +795,7 @@ function QueueAnalysisContent({
 
         <div className="queue-detail-block">
           <div className="card-title" style={{ marginBottom: 12 }}>Classificação</div>
-          <div className="queue-detail-row"><span>Status</span><StatusBadge value={selected.queue_status} /></div>
+          <div className="queue-detail-row"><span>Status</span><StatusBadge value={queueStatus} /></div>
           <div className="queue-detail-row"><span>Prioridade</span><QueuePriorityBadge value={selected.queue_prioridade} /></div>
           <div className="queue-detail-row"><span>SLA</span><QueueSlaBadge sla={selected.queue_sla} /></div>
           <div className="queue-detail-row"><span>Divergência</span><Badge tone={selected.queue_divergencia === 'Sem divergência' ? 'success' : 'warn'}>{selected.queue_divergencia}</Badge></div>
