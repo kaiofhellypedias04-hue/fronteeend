@@ -197,6 +197,20 @@ function normalizeQueueStatus(value) {
   return value || 'pendente';
 }
 
+function normalizeNotaStatus(value) {
+  const raw = String(value || '').toLowerCase();
+  if (raw.includes('substit')) return 'substituida';
+  if (raw.includes('diverg')) return 'divergente';
+  if (raw.includes('corret')) return 'correta';
+  if (raw.includes('cancel')) return 'cancelada';
+  if (raw.includes('pend')) return 'pendente';
+  return value || 'pendente';
+}
+
+function noteStatusFromRow(row) {
+  return normalizeNotaStatus(row.status_nota ?? row.status);
+}
+
 function queuePriorityFromRow(row) {
   const hasManual = String(row.prioridade_manual || '').trim();
   if (hasManual) return normalizeQueuePriority(row.prioridade_manual);
@@ -258,6 +272,7 @@ function getQueueAlertMeta(row) {
 
 function mapQueueItem(row) {
   const statusFila = row.status_fila || row.status_fila_manual || row.status;
+  const statusNota = noteStatusFromRow(row);
   const prioridade = queuePriorityFromRow(row);
   const responsavel = queueResponsavelFromRow(row);
   const entrada = row.updated_at || row.created_at || null;
@@ -266,6 +281,7 @@ function mapQueueItem(row) {
   return {
     ...row,
     queue_status: normalizeQueueStatus(statusFila),
+    queue_status_nota: statusNota,
     queue_empresa: clientName(row.certificado || row.cert_alias || ''),
     queue_empresa_alias: row.certificado || row.cert_alias || '',
     queue_prestador: row.razao_social || row.parte_exibicao_nome || '—',
@@ -308,6 +324,7 @@ function matchQueueSmartSearch(item, query) {
     empresa: normFilterValue(item.queue_empresa),
     prestador: normFilterValue(item.queue_prestador),
     valor: normFilterValue(fmtMoney(item.valor_total)),
+    status_nota: normFilterValue(item.queue_status_nota),
     status: normFilterValue(item.queue_status),
     divergencia: normFilterValue(item.queue_divergencia),
     prioridade: normFilterValue(item.queue_prioridade),
@@ -323,6 +340,8 @@ function matchQueueSmartSearch(item, query) {
     empresa: 'empresa',
     prestador: 'prestador',
     valor: 'valor',
+    statusnota: 'status_nota',
+    status_nota: 'status_nota',
     status: 'status',
     divergencia: 'divergencia',
     prioridade: 'prioridade',
@@ -443,6 +462,10 @@ const RELATORIO_COLUNAS = [
   { header: 'Simples Nacional / XML', key: 'simples_nacional' },
   { header: 'Consulta Simples API',   key: 'consulta_simples_api' },
   { header: 'Status Simples Nacional',key: 'status_simples_nacional' },
+  { header: 'Status nota',            key: 'status_nota' },
+  { header: 'Status',                 key: 'status' },
+  { header: 'Prioridade',             key: 'prioridade' },
+  { header: 'Responsável',            key: 'responsavel' },
   { header: 'Status CSRF',            key: 'status_csrf' },
   { header: 'Status IRRF',            key: 'status_irrf' },
   { header: 'Status INSS',            key: 'status_inss' },
@@ -470,6 +493,10 @@ function exportRelatorioCSV(rows, name) {
       simples_nacional:     ['simples_nacional', 'simples_xml', 'status_simples_nacional'],
       consulta_simples_api: ['consulta_simples_api', 'consulta_simples'],
       status_simples_nacional: ['status_simples_nacional', 'simples_nacional'],
+      status_nota:          ['status_nota', 'queue_status_nota', 'status'],
+      status:               ['status', 'queue_status', 'status_fila', 'status_fila_manual'],
+      prioridade:           ['prioridade', 'queue_prioridade', 'prioridade_manual'],
+      responsavel:          ['responsavel', 'queue_responsavel'],
       status_csrf:          ['status_csrf'],
       status_irrf:          ['status_irrf'],
       status_inss:          ['status_inss'],
@@ -545,6 +572,7 @@ function StatusBadge({ value }) {
   const map = {
     ok: 'success', valid: 'success', active: 'success', completed: 'success', correta: 'success',
     running: 'info', queued: 'warn',
+    substituida: 'info',
     failed: 'danger', divergente: 'danger', cancelada: 'neutral',
   };
   const tone = map[value?.toLowerCase()] || 'neutral';
@@ -2254,6 +2282,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
       'Empresa': item.queue_empresa,
       'Prestador': item.queue_prestador,
       'Valor': item.valor_total === null || item.valor_total === undefined ? '\u2014' : fmtMoney(item.valor_total),
+      'Status nota': item.queue_status_nota || '\u2014',
       'Simples Nacional / XML': item.simples_nacional || '\u2014',
       'Consulta Simples API': item.consulta_simples_api || '\u2014',
       'Status Simples Nacional': item.status_simples_nacional || '\u2014',
@@ -2270,6 +2299,10 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     return filteredItems.map(item => ({
       ...item,
       competencia: item.queue_competencia === '—' ? (item.competencia || '') : item.queue_competencia,
+      status_nota: item.queue_status_nota || '',
+      status: item.queue_status || '',
+      prioridade: normalizeQueuePriority(item.queue_prioridade) === 'alta' ? 'Alta' : normalizeQueuePriority(item.queue_prioridade) === 'media' ? 'Media' : 'Baixa',
+      responsavel: item.queue_responsavel || '',
     }));
   }, [filteredItems]);
 
@@ -2445,6 +2478,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                 <option value="correta">Correta</option>
                 <option value="pendente">Pendente</option>
                 <option value="cancelada">Cancelada</option>
+                <option value="substituida">Substituida</option>
               </select>
             </div>
             <div className="field">
@@ -2530,6 +2564,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                       <th>Empresa</th>
                       <th>Prestador</th>
                       <th>Valor</th>
+                      <th>Status nota</th>
                       <th>Simples Nacional / XML</th>
                       <th>Consulta Simples API</th>
                       <th>Status Simples Nacional</th>
@@ -2558,6 +2593,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                           {item.queue_prestador}
                         </td>
                         <td className="mono right">{fmtMoney(item.valor_total)}</td>
+                        <td><StatusBadge value={item.queue_status_nota} /></td>
                         <td>{item.simples_nacional || '\u2014'}</td>
                         <td>{item.consulta_simples_api || '\u2014'}</td>
                         <td>{item.status_simples_nacional || '\u2014'}</td>
