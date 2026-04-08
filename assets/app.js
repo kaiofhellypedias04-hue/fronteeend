@@ -907,6 +907,7 @@ function QueueAnalysisContent({
               <option value="divergente">Divergente</option>
               <option value="correta">Correta</option>
               <option value="cancelada">Cancelada</option>
+              <option value="substituida">Substituída</option>
             </select>
           </div>
           <div className="field" style={{ marginTop: 12 }}>
