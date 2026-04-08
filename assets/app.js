@@ -1033,6 +1033,7 @@ function ExecucaoPage({ baseUrl, toast }) {
       start: today(),
       end: today(),
       headless: true,
+      use_chunk_days: false,
       chunk_days: 30,
       consultar_api: true,
       login_type: 'certificado',
@@ -1072,7 +1073,12 @@ function ExecucaoPage({ baseUrl, toast }) {
     if (!form.cert_aliases.length) { toast('Selecione ao menos um alias.', 'error'); return; }
     setLoading(true); setResult(null);
     try {
-      const payload = { ...form, chunk_days: Number(form.chunk_days) };
+      const chunkDays = Number(form.chunk_days);
+      const payload = {
+        ...form,
+        use_chunk_days: !!form.use_chunk_days,
+        chunk_days: chunkDays,
+      };
       if (modoAuto) {
         const d = await api(baseUrl, '/agendar', { method: 'POST', body: payload });
         setResult(d);
@@ -1167,9 +1173,27 @@ function ExecucaoPage({ baseUrl, toast }) {
 
               <div className="form-grid form-cols-2">
                 <div className="field">
+                  <label className="check-label" style={{ marginBottom: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={!!form.use_chunk_days}
+                      onChange={e => f('use_chunk_days', e.target.checked)}
+                    />
+                    Ativar chunk por dias
+                  </label>
                   <label className="label">Chunk days</label>
-                  <input type="number" className="input" value={form.chunk_days} min={1} max={90}
+                  <input
+                    type="number"
+                    className="input"
+                    value={form.chunk_days}
+                    min={1}
+                    max={90}
+                    disabled={!form.use_chunk_days}
+                    aria-invalid={form.use_chunk_days && (!Number.isFinite(Number(form.chunk_days)) || Number(form.chunk_days) <= 0)}
                     onChange={e => f('chunk_days', e.target.value)} />
+                  {form.use_chunk_days && Number(form.chunk_days) <= 0 && (
+                    <span className="input-hint">Informe um valor positivo. Se estiver invalido, o backend aplicara fallback seguro.</span>
+                  )}
                 </div>
                 <div className="field" style={{ position: 'relative' }}>
                   <label className="label">Diretório de saída</label>
