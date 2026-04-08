@@ -194,6 +194,7 @@ function normalizeQueueStatus(value) {
   if (raw.includes('corret')) return 'correta';
   if (raw.includes('cancel')) return 'cancelada';
   if (raw.includes('pend')) return 'pendente';
+  if (raw.includes('substit')) return 'substituida';
   return value || 'pendente';
 }
 
