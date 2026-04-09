@@ -297,6 +297,104 @@ function mapQueueItem(row) {
   };
 }
 
+function asQueueMetaArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function firstDefinedValue(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null) return value;
+  }
+  return undefined;
+}
+
+function toQueueOptionAlias(entry) {
+  if (!entry) return '';
+  if (typeof entry === 'string') return entry.trim();
+  if (typeof entry !== 'object') return '';
+  return String(firstDefinedValue(
+    entry.alias,
+    entry.cert_alias,
+    entry.certificado,
+    entry.value,
+    entry.id,
+    entry.nome,
+    entry.name
+  ) || '').trim();
+}
+
+function getQueueCompanyOptions(data, queueItems = []) {
+  const sources = [
+    data?.empresas_disponiveis,
+    data?.empresas,
+    data?.available_companies,
+    data?.companies,
+    data?.filters?.empresas,
+    data?.filters?.companies,
+    data?.filter_options?.empresas,
+    data?.filter_options?.companies,
+    data?.meta?.empresas,
+    data?.meta?.companies,
+    data?.meta?.empresas_disponiveis,
+  ];
+  const source = sources.find(value => Array.isArray(value));
+  const aliases = (source ? asQueueMetaArray(source) : queueItems.map(item => item.queue_empresa_alias))
+    .map(toQueueOptionAlias)
+    .filter(Boolean);
+  return [...new Set(aliases)].sort((a, b) => String(a).localeCompare(String(b)));
+}
+
+function getQueueResponsibleOptions(data, queueItems = []) {
+  const sources = [
+    data?.responsaveis,
+    data?.responsaveis_disponiveis,
+    data?.owners,
+    data?.filters?.responsaveis,
+    data?.filter_options?.responsaveis,
+    data?.meta?.responsaveis,
+    data?.meta?.responsaveis_disponiveis,
+  ];
+  const source = sources.find(value => Array.isArray(value));
+  const names = (source ? asQueueMetaArray(source) : queueItems.map(item => item.queue_responsavel))
+    .map(entry => {
+      if (!entry) return '';
+      if (typeof entry === 'string') return entry.trim();
+      if (typeof entry !== 'object') return '';
+      return String(firstDefinedValue(entry.nome, entry.name, entry.value, entry.responsavel) || '').trim();
+    })
+    .filter(Boolean);
+  return [...new Set(names)].sort((a, b) => String(a).localeCompare(String(b)));
+}
+
+function getQueueCounts(data, fallback) {
+  const source = firstDefinedValue(
+    data?.contadores,
+    data?.counts,
+    data?.summary,
+    data?.resumo,
+    data?.meta?.contadores,
+    data?.meta?.counts,
+    data?.meta?.summary,
+    data?.meta?.resumo
+  );
+  if (!source || typeof source !== 'object') {
+    const total = Number(data?.total);
+    return Number.isFinite(total) ? { ...fallback, total } : fallback;
+  }
+
+  const total = Number(firstDefinedValue(source.total, source.total_notas, source.notas, data?.total));
+  const alta = Number(firstDefinedValue(source.alta, source.alta_prioridade, source.prioridade_alta));
+  const critica = Number(firstDefinedValue(source.critica, source.sla_critico, source.sla_critica));
+  const divergentes = Number(firstDefinedValue(source.divergentes, source.total_divergentes, source.com_divergencia));
+
+  return {
+    total: Number.isFinite(total) ? total : fallback.total,
+    alta: Number.isFinite(alta) ? alta : fallback.alta,
+    critica: Number.isFinite(critica) ? critica : fallback.critica,
+    divergentes: Number.isFinite(divergentes) ? divergentes : fallback.divergentes,
+  };
+}
+
 function buildQueueTributosComparativo(row) {
   const toNum = v => {
     const n = Number(v);
@@ -2206,12 +2304,11 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
   }, [filaData.data]);
 
   const filterOptions = useMemo(() => {
-    const uniq = arr => [...new Set(arr.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
     return {
-      empresas: uniq(queueItems.map(item => item.queue_empresa_alias)),
-      responsaveis: uniq(queueItems.map(item => item.queue_responsavel)),
+      empresas: getQueueCompanyOptions(filaData.data, queueItems),
+      responsaveis: getQueueResponsibleOptions(filaData.data, queueItems),
     };
-  }, [queueItems]);
+  }, [filaData.data, queueItems]);
 
   const filteredItems = queueItems.filter(item => {
     if (filters.prioridade && normFilterValue(item.queue_prioridade) !== normFilterValue(filters.prioridade)) return false;
@@ -2219,12 +2316,15 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     if (!matchQueueSmartSearch(item, smartSearch)) return false;
     return true;
   });
-  const queueCounts = useMemo(() => ({
-    total: filteredItems.length,
-    alta: filteredItems.filter(item => item.queue_prioridade === 'alta').length,
-    critica: filteredItems.filter(item => item.queue_sla.tone === 'danger').length,
-    divergentes: filteredItems.filter(item => item.queue_status === 'divergente').length,
-  }), [filteredItems]);
+  const queueCounts = useMemo(() => {
+    const fallback = {
+      total: filteredItems.length,
+      alta: filteredItems.filter(item => item.queue_prioridade === 'alta').length,
+      critica: filteredItems.filter(item => item.queue_sla.tone === 'danger').length,
+      divergentes: filteredItems.filter(item => item.queue_status === 'divergente').length,
+    };
+    return getQueueCounts(filaData.data, fallback);
+  }, [filaData.data, filteredItems]);
 
   const paginatedItems = useMemo(() => {
     const start = (page - 1) * pageSize;
