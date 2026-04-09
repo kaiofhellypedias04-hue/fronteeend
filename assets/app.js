@@ -719,12 +719,13 @@ function Confirm({ open, title, msg, onOk, onCancel, danger }) {
 }
 
 function Pagination({ page, pageSize, total, onPage, onSize }) {
-  const totalPages = Math.max(1, Math.ceil((total || 0) / pageSize));
+  const safeTotal = Math.max(0, Number(total) || 0);
+  const totalPages = Math.max(1, Math.ceil(safeTotal / pageSize));
+  const from = safeTotal === 0 ? 0 : ((page - 1) * pageSize) + 1;
+  const to = safeTotal === 0 ? 0 : Math.min(page * pageSize, safeTotal);
   return (
     <div className="pagination">
-      <span className="pagination-info">
-        {((page - 1) * pageSize) + 1}–{Math.min(page * pageSize, total || 0)} de {total || 0}
-      </span>
+      <span className="pagination-info">{from}–{to} de {safeTotal}</span>
       <div className="pagination-controls">
         {onSize && (
           <select className="select" style={{ width: 'auto', padding: '5px 28px 5px 10px', fontSize: 12 }}
@@ -763,11 +764,17 @@ function QueueSlaBadge({ sla }) {
   return <span className={cn('sla-pill', `sla-pill-${sla?.tone || 'neutral'}`)}>{sla?.label || 'Sem prazo'}</span>;
 }
 
-function FilterBar({ children, label = 'Filtros', defaultOpen = true }) {
+function FilterBar({ children, label = 'Filtros', defaultOpen = true, onToggle = null }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="filter-bar">
-      <div className="filter-bar-head" onClick={() => setOpen(o => !o)}>
+    <div className={cn('filter-bar', open ? 'is-open' : 'is-collapsed')}>
+      <div className="filter-bar-head" onClick={() => {
+        setOpen(o => {
+          const next = !o;
+          onToggle?.(next);
+          return next;
+        });
+      }}>
         <span className="filter-bar-head-left">
           <IconFilter />
           {label}
@@ -2267,6 +2274,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
   const queueRulesEnabled = false;
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState(null);
   const [rulesModalOpen, setRulesModalOpen] = useState(false);
   const [obsInterna, setObsInterna] = useState('');
@@ -2287,16 +2295,20 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     ativo: true,
   });
   const [filters, setFilters] = useState(getQueueDefaultFilters);
+  const hasClientSideFilters = !!(filters.prioridade || filters.responsavel || smartSearch.trim());
 
   const filaData = useAsync(() => {
-    const q = new URLSearchParams({ page: '1', page_size: '500' });
+    const q = new URLSearchParams({
+      page: String(hasClientSideFilters ? 1 : page),
+      page_size: String(hasClientSideFilters ? 500 : pageSize),
+    });
     if (filters.status) q.set('status', filters.status);
     if (filters.empresa) q.set('cert_alias', filters.empresa);
     if (filters.data_tipo) q.set('data_tipo', filters.data_tipo);
     if (filters.data_inicio) q.set('data_inicio', filters.data_inicio);
     if (filters.data_fim) q.set('data_fim', filters.data_fim);
     return api(baseUrl, `/nfse?${q.toString()}`);
-  }, [baseUrl, filters.status, filters.empresa, filters.data_tipo, filters.data_inicio, filters.data_fim]);
+  }, [baseUrl, filters.status, filters.empresa, filters.data_tipo, filters.data_inicio, filters.data_fim, hasClientSideFilters, page, pageSize]);
   const rulesData = { loading: false, error: null, data: [], reload: () => {} };
 
   const queueItems = useMemo(() => {
@@ -2331,10 +2343,16 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     return filteredItems.slice(start, start + pageSize);
   }, [filteredItems, page, pageSize]);
 
+  const paginationTotal = hasClientSideFilters
+    ? filteredItems.length
+    : Number(filaData.data?.total) || queueItems.length;
+
+  const visibleItems = hasClientSideFilters ? paginatedItems : queueItems;
+
   useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize));
+    const totalPages = Math.max(1, Math.ceil(paginationTotal / pageSize));
     if (page > totalPages) setPage(1);
-  }, [filteredItems.length, page, pageSize]);
+  }, [paginationTotal, page, pageSize]);
 
   useEffect(() => {
     setObsInterna(selected?.observacao_interna || '');
@@ -2477,7 +2495,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
   };
 
   return (
-    <div className={cn('page-enter', isVariantB && 'queue-page-b')}>
+    <div className={cn('page-enter', isVariantB && 'queue-page-b', !sidebarVisible && !filtersOpen && 'queue-page-wide')}>
       <SectionHeader
         title={isVariantB ? 'Fila de Trabalho B' : 'Fila de Trabalho'}
         sub={isVariantB ? 'Variante B da visao operacional das notas em analise no portal' : 'Visao operacional das notas em analise no portal'}
@@ -2570,7 +2588,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
           </div>
         ) : null}
 
-        <FilterBar label={isVariantB ? 'Filtros operacionais' : 'Filtros da fila'} defaultOpen={false}>
+        <FilterBar label={isVariantB ? 'Filtros operacionais' : 'Filtros da fila'} defaultOpen={false} onToggle={setFiltersOpen}>
           <div className="form-grid form-cols-4" style={{ marginTop: 16 }} onClick={e => e.stopPropagation()}>
             <div className="field">
               <label className="label">Status</label>
@@ -2680,9 +2698,9 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                     </tr>
                   </thead>
                   <tbody>
-                    {!paginatedItems.length ? (
+                    {!visibleItems.length ? (
                       <Empty msg="Nenhuma nota encontrada para os filtros atuais." />
-                    ) : paginatedItems.map(item => (
+                    ) : visibleItems.map(item => (
                       <tr
                         key={item.id}
                         className={item.queue_sla.tone === 'danger' ? 'queue-row-attention' : ''}
@@ -2729,7 +2747,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
         <Pagination
           page={page}
           pageSize={pageSize}
-          total={filteredItems.length}
+          total={paginationTotal}
           onPage={setPage}
           onSize={s => { setPageSize(s); setPage(1); }}
         />

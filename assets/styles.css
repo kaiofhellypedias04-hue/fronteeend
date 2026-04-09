@@ -1188,6 +1188,41 @@ tbody td.actions { white-space: nowrap; }
     var(--bg);
 }
 
+.queue-page-wide .section-header {
+  margin-bottom: 12px;
+  align-items: center;
+}
+
+.queue-page-wide .queue-grid {
+  gap: 12px;
+}
+
+.queue-page-wide .card-header {
+  padding: 16px 20px 0;
+}
+
+.queue-page-wide .card-body {
+  padding: 16px 20px 20px;
+}
+
+.queue-page-wide .queue-toolbar {
+  gap: 10px;
+}
+
+.queue-page-wide .empresa-card-metric {
+  padding: 8px 12px;
+}
+
+.queue-page-wide .queue-table.scrollable {
+  max-height: calc(100vh - 180px);
+}
+
+.queue-page-wide .queue-table td,
+.queue-page-wide .queue-table th {
+  padding-top: 9px;
+  padding-bottom: 9px;
+}
+
 .queue-toolbar {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
