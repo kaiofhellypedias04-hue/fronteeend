@@ -1292,6 +1292,7 @@ function ExecucaoPage({ baseUrl, toast }) {
       cert_aliases: [],
       start: today(),
       end: today(),
+      lookback_days: 30,
       headless: true,
       use_chunk_days: false,
       chunk_days: 30,
@@ -1334,8 +1335,10 @@ function ExecucaoPage({ baseUrl, toast }) {
     setLoading(true); setResult(null);
     try {
       const chunkDays = Number(form.chunk_days);
+      const lookbackDays = Number(form.lookback_days);
       const payload = {
         ...form,
+        lookback_days: lookbackDays,
         use_chunk_days: !!form.use_chunk_days,
         chunk_days: chunkDays,
       };
@@ -1386,7 +1389,7 @@ function ExecucaoPage({ baseUrl, toast }) {
                   <button
                     className={cn('btn btn-sm', modoAuto ? 'btn-primary' : 'btn-ghost')}
                     onClick={() => setModoAuto(true)}>
-                    ⏱ Automático — Últimos 30 dias
+                    {`⏱ Automático — Últimos ${form.lookback_days || 30} dias`}
                   </button>
                 </div>
               </div>
@@ -1407,10 +1410,25 @@ function ExecucaoPage({ baseUrl, toast }) {
 
               {/* Horário — só no automático */}
               {modoAuto && (
-                <div className="field" style={{ maxWidth: 180 }}>
-                  <label className="label">Horário de execução diária</label>
-                  <input type="time" className="input" value={form.hora_execucao} onChange={e => f('hora_execucao', e.target.value)} />
-                  <span className="input-hint">A execução ocorrerá todos os dias neste horário</span>
+                <div className="form-grid form-cols-2">
+                  <div className="field" style={{ maxWidth: 180 }}>
+                    <label className="label">Horário de execução diária</label>
+                    <input type="time" className="input" value={form.hora_execucao} onChange={e => f('hora_execucao', e.target.value)} />
+                    <span className="input-hint">A execução ocorrerá todos os dias neste horário</span>
+                  </div>
+                  <div className="field" style={{ maxWidth: 220 }}>
+                    <label className="label">Atualizar últimos X dias</label>
+                    <input
+                      type="number"
+                      className="input"
+                      value={form.lookback_days}
+                      min={1}
+                      max={365}
+                      aria-invalid={!Number.isFinite(Number(form.lookback_days)) || Number(form.lookback_days) <= 0}
+                      onChange={e => f('lookback_days', e.target.value)}
+                    />
+                    <span className="input-hint">Define o período total do modo automático, sem alterar o chunk interno.</span>
+                  </div>
                 </div>
               )}
 
