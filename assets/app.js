@@ -19,6 +19,8 @@ const MENU = [
 ];
 
 const API_URL_STORAGE_KEY = 'nfse_url';
+const APP_LOCALE = 'pt-BR';
+const APP_TIME_ZONE = 'America/Sao_Paulo';
 
 const RAILWAY_API_BASE_URL = 'https://backend-render-ready-production.up.railway.app';
 const DEFAULT_API_BASE_URL = normalizeBaseUrl(RAILWAY_API_BASE_URL);
@@ -130,21 +132,25 @@ function fmtDate(v) {
   if (!v) return '—';
   const d = new Date(v);
   if (isNaN(d)) return String(v);
-  return d.toLocaleString('pt-BR');
+  return d.toLocaleString(APP_LOCALE, { timeZone: APP_TIME_ZONE });
 }
 
 function fmtDateShort(v) {
   if (!v) return '—';
   const d = new Date(v);
   if (isNaN(d)) return String(v);
-  return d.toLocaleDateString('pt-BR');
+  return d.toLocaleDateString(APP_LOCALE, { timeZone: APP_TIME_ZONE });
 }
 
 function fmtCompetenciaFromDate(v) {
   if (!v) return '—';
   const d = new Date(v);
   if (isNaN(d)) return '—';
-  return `${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+  return d.toLocaleDateString(APP_LOCALE, {
+    timeZone: APP_TIME_ZONE,
+    month: '2-digit',
+    year: 'numeric',
+  });
 }
 
 function toDateInputValue(value = new Date()) {
@@ -1829,7 +1835,7 @@ function FileRow({ file, baseUrl, toast }) {
           )}
           {file.created_at && (
             <span style={{ fontSize: 10.5, color: 'var(--text-3)' }}>
-              {new Date(file.created_at).toLocaleDateString('pt-BR')}
+              {fmtDateShort(file.created_at)}
             </span>
           )}
         </div>
