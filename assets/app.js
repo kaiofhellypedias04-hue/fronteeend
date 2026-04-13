@@ -208,6 +208,16 @@ function normalizeNotaStatus(value) {
   return value || 'pendente';
 }
 
+function normalizeProcessStatus(value) {
+  const raw = String(value || '').toLowerCase();
+  if (raw.includes('cancel')) return 'cancelada';
+  if (raw.includes('queue')) return 'queued';
+  if (raw.includes('run')) return 'running';
+  if (raw.includes('complete') || raw.includes('success')) return 'completed';
+  if (raw.includes('fail') || raw.includes('error')) return 'failed';
+  return value || 'n/a';
+}
+
 function noteStatusFromRow(row) {
   return normalizeNotaStatus(row.status_nota ?? row.status);
 }
@@ -496,6 +506,25 @@ function downloadBrowserBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
+function openUrlInNewTab(url) {
+  const popup = window.open(url, '_blank', 'noopener,noreferrer');
+  if (!popup) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.click();
+  }
+}
+
+function downloadUrl(url, filename) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || '';
+  a.rel = 'noopener noreferrer';
+  a.click();
+}
+
 async function downloadBlob(baseUrl, processId, arquivoId, filename) {
   const blob = await fetchProcessFileBlob(baseUrl, processId, arquivoId);
   downloadBrowserBlob(blob, filename);
@@ -668,14 +697,15 @@ function Badge({ tone = 'neutral', children }) {
 }
 
 function StatusBadge({ value }) {
+  const normalized = normalizeProcessStatus(value);
   const map = {
     ok: 'success', valid: 'success', active: 'success', completed: 'success', correta: 'success',
     running: 'info', queued: 'warn',
     substituida: 'info',
     failed: 'danger', divergente: 'danger', cancelada: 'neutral',
   };
-  const tone = map[value?.toLowerCase()] || 'neutral';
-  return <Badge tone={tone}>{value || 'n/a'}</Badge>;
+  const tone = map[String(normalized).toLowerCase()] || 'neutral';
+  return <Badge tone={tone}>{normalized}</Badge>;
 }
 
 function Alert({ type = 'info', children }) {
@@ -698,7 +728,7 @@ function Modal({ open, title, onClose, wide, xl, children }) {
   );
 }
 
-function Confirm({ open, title, msg, onOk, onCancel, danger }) {
+function Confirm({ open, title, msg, onOk, onCancel, danger, okLabel = 'Confirmar', cancelLabel = 'Cancelar' }) {
   if (!open) return null;
   return ReactDOM.createPortal(
     <div className="modal-overlay" onClick={onCancel}>
@@ -709,8 +739,8 @@ function Confirm({ open, title, msg, onOk, onCancel, danger }) {
         <div className="confirm-title">{title}</div>
         <div className="confirm-msg">{msg}</div>
         <div className="confirm-actions">
-          <button className="btn btn-ghost btn-sm" onClick={onCancel}>Cancelar</button>
-          <button className={cn('btn btn-sm', danger ? 'btn-danger' : 'btn-primary')} onClick={onOk}>Confirmar</button>
+          <button className="btn btn-ghost btn-sm" onClick={onCancel}>{cancelLabel}</button>
+          <button className={cn('btn btn-sm', danger ? 'btn-danger' : 'btn-primary')} onClick={onOk}>{okLabel}</button>
         </div>
       </div>
     </div>,
@@ -801,55 +831,139 @@ function getQueueDefaultFilters() {
   };
 }
 
-function normalizeQueueDocumentToken(value) {
-  return normFilterValue(value).replace(/[^a-z0-9]/g, '');
+function resolveDocumentUrl(baseUrl, value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    return new URL(raw, baseUrl).toString();
+  } catch {
+    return raw;
+  }
 }
 
-function pickQueueDocument(files, row) {
-  if (!Array.isArray(files) || !files.length || !row) return null;
-  const tokens = [
-    row.numero_documento,
-    row.queue_numero_nota,
-    row.chave_acesso,
-    row.id,
-  ].map(normalizeQueueDocumentToken).filter(Boolean);
+function inferDocumentKind(value) {
+  const raw = normFilterValue(value);
+  if (!raw) return '';
+  if (raw.includes('application/xml') || raw.includes('text/xml') || raw.endsWith('.xml') || raw === 'xml') return 'xml';
+  if (raw.includes('application/pdf') || raw.endsWith('.pdf') || raw === 'pdf') return 'pdf';
+  return '';
+}
 
-  const ranked = files
-    .map(file => {
-      const haystack = normalizeQueueDocumentToken(file.nome_arquivo || file.filename || '');
-      const score = tokens.reduce((best, token) => haystack.includes(token) ? Math.max(best, token.length) : best, 0);
-      return { file, score };
+function normalizeNoteDocument(baseUrl, kind, source) {
+  if (!source) return null;
+
+  if (typeof source === 'string') {
+    const url = resolveDocumentUrl(baseUrl, source);
+    if (!url) return null;
+    return {
+      kind,
+      url,
+      name: kind === 'xml' ? 'documento.xml' : 'documento.pdf',
+      processId: null,
+      fileId: null,
+    };
+  }
+
+  if (typeof source !== 'object' || Array.isArray(source)) return null;
+
+  const url = resolveDocumentUrl(baseUrl,
+    source.download_url ||
+    source.downloadUrl ||
+    source.url ||
+    source.file_url ||
+    source.arquivo_url ||
+    source.href ||
+    source.link ||
+    source.xml_url ||
+    source.pdf_url
+  );
+  const processId = source.processo_id || null;
+  const fileId = source.id || null;
+  if (!url && !(processId && fileId)) return null;
+
+  return {
+    kind,
+    url,
+    name: source.nome_arquivo || source.filename || source.nome || source.name || (kind === 'xml' ? 'documento.xml' : 'documento.pdf'),
+    processId,
+    fileId,
+  };
+}
+
+function pickDocumentFromCollection(baseUrl, collection, kind) {
+  if (!Array.isArray(collection) || !collection.length) return null;
+
+  const matches = collection
+    .filter(item => {
+      const explicitKind = inferDocumentKind(
+        item?.tipo ||
+        item?.kind ||
+        item?.categoria ||
+        item?.content_type ||
+        item?.contentType ||
+        item?.mime_type ||
+        item?.mimeType ||
+        item?.extensao ||
+        item?.extension ||
+        item?.nome_arquivo ||
+        item?.filename ||
+        item?.nome ||
+        item?.name
+      );
+      return explicitKind === kind;
     })
-    .sort((a, b) => b.score - a.score);
+    .map(item => normalizeNoteDocument(baseUrl, kind, item))
+    .filter(Boolean);
 
-  if (ranked[0]?.score > 0) return ranked[0].file;
-  return files.length === 1 ? files[0] : null;
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function resolveNoteDocuments(baseUrl, payload) {
+  if (!payload) return { xml: null, pdf: null };
+
+  const collection = payload.documentos || payload.documents || payload.items || payload.files || payload.arquivos || payload.results || payload;
+  const xml = normalizeNoteDocument(baseUrl, 'xml',
+    payload.xml_file ||
+    payload.xmlFile ||
+    payload.xml ||
+    payload.xml_url ||
+    payload.xmlUrl
+  ) || pickDocumentFromCollection(baseUrl, collection, 'xml');
+
+  const pdf = normalizeNoteDocument(baseUrl, 'pdf',
+    payload.pdf_file ||
+    payload.pdfFile ||
+    payload.pdf ||
+    payload.pdf_url ||
+    payload.pdfUrl
+  ) || pickDocumentFromCollection(baseUrl, collection, 'pdf');
+
+  return { xml, pdf };
 }
 
 function QueueNoteDocuments({ baseUrl, selected, toast }) {
   const [pendingAction, setPendingAction] = useState('');
-  const processId = selected?.processo_id;
+  const noteId = selected?.id;
   const docsData = useAsync(() => {
-    if (!processId) return Promise.resolve({ pdfs: [], xmls: [] });
-    return Promise.allSettled([
-      api(baseUrl, `/processos/${processId}/pdfs`),
-      api(baseUrl, `/processos/${processId}/xmls`),
-    ]).then(([pdfs, xmls]) => ({
-      pdfs: pdfs.status === 'fulfilled' && Array.isArray(pdfs.value) ? pdfs.value : [],
-      xmls: xmls.status === 'fulfilled' && Array.isArray(xmls.value) ? xmls.value : [],
-    }));
-  }, [baseUrl, processId]);
+    if (!noteId) return Promise.resolve({ xml: null, pdf: null });
+    return api(baseUrl, `/nfse/${noteId}/documentos`).then(data => resolveNoteDocuments(baseUrl, data));
+  }, [baseUrl, noteId]);
 
-  const pdfFile = useMemo(() => pickQueueDocument(docsData.data?.pdfs || [], selected), [docsData.data, selected]);
-  const xmlFile = useMemo(() => pickQueueDocument(docsData.data?.xmls || [], selected), [docsData.data, selected]);
+  const pdfFile = docsData.data?.pdf || null;
+  const xmlFile = docsData.data?.xml || null;
 
   const handleAction = async (kind, file, mode) => {
-    if (!file?.processo_id || !file?.id) return;
+    if (!file) return;
     const key = `${kind}-${mode}`;
     setPendingAction(key);
     try {
-      if (mode === 'view') await openProcessFile(baseUrl, file.processo_id, file.id);
-      else await downloadBlob(baseUrl, file.processo_id, file.id, file.nome_arquivo || `${kind}.bin`);
+      if (file.url) {
+        if (mode === 'view') openUrlInNewTab(file.url);
+        else downloadUrl(file.url, file.name || `${kind}.bin`);
+      } else if (file.processId && file.fileId) {
+        if (mode === 'view') await openProcessFile(baseUrl, file.processId, file.fileId);
+        else await downloadBlob(baseUrl, file.processId, file.fileId, file.name || `${kind}.bin`);
+      }
     } catch (e) {
       toast(e.message, 'error');
     } finally {
@@ -861,20 +975,20 @@ function QueueNoteDocuments({ baseUrl, selected, toast }) {
     <div className="queue-detail-block">
       <div className="card-title" style={{ marginBottom: 12 }}>Documentos da nota</div>
 
-      {!processId ? (
-        <Alert type="info">Esta nota ainda não possui processo vinculado para consulta de XML/PDF.</Alert>
+      {!noteId ? (
+        <Alert type="info">Esta nota ainda não possui identificador para consulta de documentos.</Alert>
       ) : docsData.loading ? (
         <Loading label="Carregando documentos..." />
       ) : docsData.error ? (
         <Alert type="error">{docsData.error}</Alert>
       ) : (!pdfFile && !xmlFile) ? (
-        <Alert type="info">Nenhum XML ou PDF correspondente foi encontrado para esta nota.</Alert>
+        <Alert type="info">Nenhum XML ou PDF foi encontrado para esta nota.</Alert>
       ) : (
         <div className="queue-docs-grid">
           {xmlFile ? (
             <div className="queue-doc-card">
               <div className="queue-doc-title">XML</div>
-              <div className="queue-doc-name" title={xmlFile.nome_arquivo}>{xmlFile.nome_arquivo}</div>
+              <div className="queue-doc-name" title={xmlFile.name}>{xmlFile.name}</div>
               <div className="queue-doc-actions">
                 <button className="btn btn-ghost btn-sm" disabled={pendingAction === 'xml-view'} onClick={() => handleAction('xml', xmlFile, 'view')}>
                   {pendingAction === 'xml-view' ? <Spinner size={12} /> : 'Ver XML'}
@@ -889,7 +1003,7 @@ function QueueNoteDocuments({ baseUrl, selected, toast }) {
           {pdfFile ? (
             <div className="queue-doc-card">
               <div className="queue-doc-title">PDF</div>
-              <div className="queue-doc-name" title={pdfFile.nome_arquivo}>{pdfFile.nome_arquivo}</div>
+              <div className="queue-doc-name" title={pdfFile.name}>{pdfFile.name}</div>
               <div className="queue-doc-actions">
                 <button className="btn btn-ghost btn-sm" disabled={pendingAction === 'pdf-view'} onClick={() => handleAction('pdf', pdfFile, 'view')}>
                   {pendingAction === 'pdf-view' ? <Spinner size={12} /> : 'Ver PDF'}
@@ -1729,7 +1843,7 @@ function FileRow({ file, baseUrl, toast }) {
   );
 }
 
-function ProcessoModal({ selected, baseUrl, toast, onClose }) {
+function ProcessoModal({ selected, baseUrl, toast, onClose, extraActions = null }) {
   const [tab, setTab] = React.useState('pdfs');
   const [dlZip, setDlZip] = React.useState(false);
   const [dlCsv, setDlCsv] = React.useState(false);
@@ -1844,6 +1958,7 @@ function ProcessoModal({ selected, baseUrl, toast, onClose }) {
           {dlCsv ? <Spinner size={12} /> : <IconDown />}
           Exportar CSV
         </button>
+        {extraActions}
         <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-3)', alignSelf: 'center' }}>
           {totalArquivos} arquivo{totalArquivos !== 1 ? 's' : ''} disponíveis
         </span>
@@ -2000,6 +2115,46 @@ function ProcessoModal({ selected, baseUrl, toast, onClose }) {
   );
 }
 
+function canCancelProcess(status) {
+  return ['queued', 'running'].includes(normalizeProcessStatus(status));
+}
+
+function canDeleteProcess(status) {
+  return normalizeProcessStatus(status) !== 'deleting';
+}
+
+function ProcessActions({ process, busy, onCancel, onDelete, compact = false }) {
+  const actions = [];
+
+  if (canCancelProcess(process?.status)) {
+    actions.push(
+      <button
+        key="cancel"
+        className={cn('btn', compact ? 'btn-xs' : 'btn-sm', 'btn-ghost')}
+        disabled={busy}
+        onClick={() => onCancel(process)}
+      >
+        {busy ? <Spinner size={12} /> : <><IconStop /> Cancelar</>}
+      </button>
+    );
+  }
+
+  if (canDeleteProcess(process?.status)) {
+    actions.push(
+      <button
+        key="delete"
+        className={cn('btn', compact ? 'btn-xs' : 'btn-sm', 'btn-danger')}
+        disabled={busy}
+        onClick={() => onDelete(process)}
+      >
+        {busy ? <Spinner size={12} /> : <><IconTrash /> Excluir</>}
+      </button>
+    );
+  }
+
+  return actions.length ? <>{actions}</> : null;
+}
+
 function ProcessosPage({ baseUrl, toast }) {
   const [empresaSelecionada, setEmpresaSelecionada] = useState(null);
   const [busca, setBusca]                           = useState('');
@@ -2008,6 +2163,8 @@ function ProcessosPage({ baseUrl, toast }) {
   const [statusFiltro, setStatusFiltro]             = useState('');
   const [selected, setSelected]                     = useState(null);
   const [loadingId, setLoadingId]                   = useState(null);
+  const [actionLoadingId, setActionLoadingId]       = useState(null);
+  const [confirmAction, setConfirmAction]           = useState(null);
 
   const allProcs = useAsync(() => api(baseUrl, '/processos?page=1&page_size=500'), [baseUrl]);
 
@@ -2062,6 +2219,77 @@ function ProcessosPage({ baseUrl, toast }) {
         relatorio: relatorio.status === 'fulfilled' ? relatorio.value : null,
       });
     } catch(e) { toast(e.message, 'error'); } finally { setLoadingId(null); }
+  };
+
+  const reloadProcessViews = async (processId, { closeOnMissing = false } = {}) => {
+    allProcs.reload().catch(() => {});
+    const procPromise = empresaSelecionada ? procList.reload().catch(() => {}) : Promise.resolve();
+
+    if (!processId || selected?.proc?.id !== processId) {
+      await procPromise;
+      return;
+    }
+
+    try {
+      await detalhar(processId);
+    } catch (e) {
+      if (closeOnMissing && /404|not found|não encontrado/i.test(String(e.message || ''))) {
+        setSelected(null);
+        return;
+      }
+      throw e;
+    }
+  };
+
+  const openCancelConfirm = process => {
+    setConfirmAction({
+      type: 'cancel',
+      process,
+      title: 'Cancelar processamento?',
+      msg: 'Tem certeza que deseja cancelar este processo? Se ele estiver em execução, a interrupção será feita de forma segura.',
+      okLabel: 'Continuar',
+      cancelLabel: 'Voltar',
+      danger: false,
+    });
+  };
+
+  const openDeleteConfirm = process => {
+    setConfirmAction({
+      type: 'delete',
+      process,
+      title: 'Excluir processo?',
+      msg: 'Tem certeza que deseja excluir este processo? Essa ação não poderá ser desfeita.',
+      okLabel: 'Continuar',
+      cancelLabel: 'Voltar',
+      danger: true,
+    });
+  };
+
+  const executeConfirmedAction = async () => {
+    if (!confirmAction?.process?.id) return;
+
+    const { type, process } = confirmAction;
+    setActionLoadingId(process.id);
+    try {
+      const data = type === 'cancel'
+        ? await api(baseUrl, `/processos/${process.id}/cancelar`, { method: 'POST' })
+        : await api(baseUrl, `/processos/${process.id}`, { method: 'DELETE' });
+
+      if (type === 'cancel') {
+        const status = normalizeProcessStatus(data?.status || 'cancelled');
+        toast(status === 'cancelada' ? 'Processo cancelado com sucesso.' : 'Solicitação de cancelamento enviada com sucesso.', 'success');
+        await reloadProcessViews(process.id);
+      } else {
+        toast(data?.message || 'Processo excluído com sucesso.', 'success');
+        setSelected(current => current?.proc?.id === process.id ? null : current);
+        await reloadProcessViews(process.id, { closeOnMissing: true });
+      }
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setActionLoadingId(null);
+      setConfirmAction(null);
+    }
   };
 
   const emp = empresaSelecionada ? empresas.find(e => e.alias === empresaSelecionada) : null;
@@ -2177,6 +2405,7 @@ function ProcessosPage({ baseUrl, toast }) {
               <option value="queued">Queued</option>
               <option value="running">Running</option>
               <option value="completed">Completed</option>
+              <option value="cancelled">Cancelada</option>
               <option value="failed">Failed</option>
             </select>
           </div>
@@ -2199,8 +2428,8 @@ function ProcessosPage({ baseUrl, toast }) {
                     {/* Status indicator */}
                     <div style={{
                       width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-                      background: { completed: 'var(--green)', running: 'var(--accent)', failed: 'var(--red)', queued: 'var(--text-3)' }[r.status] || 'var(--text-3)',
-                      boxShadow: r.status === 'running' ? '0 0 8px var(--accent)' : 'none',
+                      background: { completed: 'var(--green)', running: 'var(--accent)', failed: 'var(--red)', queued: 'var(--text-3)', cancelada: 'var(--text-2)' }[normalizeProcessStatus(r.status)] || 'var(--text-3)',
+                      boxShadow: normalizeProcessStatus(r.status) === 'running' ? '0 0 8px var(--accent)' : 'none',
                     }} />
 
                     {/* Info do processo */}
@@ -2242,6 +2471,14 @@ function ProcessosPage({ baseUrl, toast }) {
                     >
                       {loadingId === r.id ? <Spinner size={12} /> : <><IconFolder /> Abrir</>}
                     </button>
+                    <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                      <ProcessActions
+                        process={r}
+                        busy={actionLoadingId === r.id}
+                        onCancel={openCancelConfirm}
+                        onDelete={openDeleteConfirm}
+                      />
+                    </div>
                   </div>
                 ))
               }
@@ -2260,6 +2497,25 @@ function ProcessosPage({ baseUrl, toast }) {
         baseUrl={baseUrl}
         toast={toast}
         onClose={() => setSelected(null)}
+        extraActions={selected?.proc ? (
+          <ProcessActions
+            process={selected.proc}
+            busy={actionLoadingId === selected.proc.id}
+            onCancel={openCancelConfirm}
+            onDelete={openDeleteConfirm}
+            compact
+          />
+        ) : null}
+      />
+      <Confirm
+        open={!!confirmAction}
+        title={confirmAction?.title}
+        msg={confirmAction?.msg}
+        onOk={executeConfirmedAction}
+        onCancel={() => { if (!actionLoadingId) setConfirmAction(null); }}
+        danger={confirmAction?.danger}
+        okLabel={confirmAction?.okLabel}
+        cancelLabel={confirmAction?.cancelLabel}
       />
     </div>
   );
