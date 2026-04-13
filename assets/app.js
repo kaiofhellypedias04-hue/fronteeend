@@ -237,6 +237,11 @@ function queueResponsavelFromRow(row) {
   return row.responsavel || 'Não atribuído';
 }
 
+function hasAssignedQueueResponsible(value) {
+  const normalized = normFilterValue(value);
+  return !!normalized && normalized !== 'nao atribuido';
+}
+
 function queueSlaFromDate(dateValue, prioridade) {
   if (!dateValue) return { label: 'Sem prazo', tone: 'neutral', hours: null };
   const base = new Date(dateValue);
@@ -2988,7 +2993,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                             className="btn btn-primary btn-xs"
                             onClick={e => { e.stopPropagation(); setSelected(item); }}
                           >
-                            Analisar
+                            {hasAssignedQueueResponsible(item.queue_responsavel) ? 'Analisado' : 'Analisar'}
                           </button>
                         </td>
                       </tr>
