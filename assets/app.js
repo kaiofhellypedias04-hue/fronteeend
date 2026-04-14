@@ -983,7 +983,7 @@ function QueueNoteDocuments({ baseUrl, selected, toast }) {
   };
 
   return (
-    <div className="queue-detail-block">
+    <div className="queue-detail-block queue-analysis-highlight">
       <div className="card-title" style={{ marginBottom: 12 }}>Documentos da nota</div>
 
       {!noteId ? (
@@ -1042,25 +1042,36 @@ function QueueAnalysisContent({
   const queueStatus = selected.status_fila_final || selected.queue_status || selected.status || 'pendente';
 
   return (
-    <div className="queue-detail">
-      <div className="queue-detail-grid">
-        <div className="queue-detail-block">
-          <div className="card-title" style={{ marginBottom: 12 }}>Resumo operacional</div>
-          <div className="queue-detail-row"><span>Empresa</span><strong>{selected.queue_empresa}</strong></div>
-          <div className="queue-detail-row"><span>Prestador</span><strong>{selected.queue_prestador}</strong></div>
-          <div className="queue-detail-row"><span>Valor</span><strong>{fmtMoney(selected.valor_total)}</strong></div>
-          <div className="queue-detail-row"><span>Entrada</span><strong>{fmtDate(selected.queue_entrada)}</strong></div>
-          <div className="queue-detail-row"><span>Responsável</span><strong>{selected.queue_responsavel}</strong></div>
+    <div className="queue-detail queue-analysis-layout">
+      <section className="queue-analysis-hero">
+        <div className="queue-analysis-hero-main">
+          <div className="queue-analysis-kicker">Analisar nota</div>
+          <div className="queue-analysis-number">{selected.queue_numero_nota}</div>
+          <div className="queue-analysis-subline">
+            <span>{selected.queue_empresa}</span>
+            <span>{selected.queue_prestador}</span>
+            <span>{fmtMoney(selected.valor_total)}</span>
+          </div>
         </div>
-
-        <div className="queue-detail-block">
-          <div className="card-title" style={{ marginBottom: 12 }}>Classificação</div>
-          <div className="queue-detail-row"><span>Status</span><StatusBadge value={queueStatus} /></div>
-          <div className="queue-detail-row"><span>Prioridade</span><QueuePriorityBadge value={selected.queue_prioridade} /></div>
-          <div className="queue-detail-row"><span>SLA</span><QueueSlaBadge sla={selected.queue_sla} /></div>
-          <div className="queue-detail-row"><span>Divergência</span><Badge tone={selected.queue_divergencia_final ? 'warn' : 'success'}>{selected.queue_divergencia}</Badge></div>
+        <div className="queue-analysis-meta">
+          <div className="queue-analysis-meta-item">
+            <span className="queue-analysis-meta-label">Status</span>
+            <div><StatusBadge value={queueStatus} /></div>
+          </div>
+          <div className="queue-analysis-meta-item">
+            <span className="queue-analysis-meta-label">Prioridade</span>
+            <div><QueuePriorityBadge value={selected.queue_prioridade} /></div>
+          </div>
+          <div className="queue-analysis-meta-item">
+            <span className="queue-analysis-meta-label">SLA</span>
+            <div><QueueSlaBadge sla={selected.queue_sla} /></div>
+          </div>
+          <div className="queue-analysis-meta-item">
+            <span className="queue-analysis-meta-label">Responsável</span>
+            <strong>{selected.queue_responsavel}</strong>
+          </div>
         </div>
-      </div>
+      </section>
 
       {!!selected.campos_ausentes_xml && (
         <Alert type="warn">
@@ -1074,38 +1085,70 @@ function QueueAnalysisContent({
         </Alert>
       )}
 
-      <div className="queue-detail-grid">
-        <div className="queue-detail-block">
-          <div className="card-title" style={{ marginBottom: 12 }}>Identificação da nota</div>
-          <div className="queue-detail-row"><span>ID</span><strong className="mono">{selected.id}</strong></div>
-          <div className="queue-detail-row"><span>Processo</span><strong className="mono">{selected.processo_id || '—'}</strong></div>
-          <div className="queue-detail-row"><span>Chave</span><strong className="mono">{selected.chave_acesso || '—'}</strong></div>
-          <div className="queue-detail-row"><span>CNPJ/CPF</span><strong>{selected.cnpj_cpf || '—'}</strong></div>
-          <div className="queue-detail-row"><span>Tipo</span><strong>{selected.tipo_nota || '—'}</strong></div>
+      <section className="queue-sheet">
+        <div className="queue-sheet-section queue-sheet-section-wide">
+          <div className="card-title" style={{ marginBottom: 14 }}>Ficha da nota</div>
+          <div className="queue-sheet-grid queue-sheet-grid-2">
+            <div className="queue-sheet-group">
+              <div className="queue-sheet-group-title">Identificação da nota</div>
+              <div className="queue-detail-row"><span>ID</span><strong className="mono">{selected.id}</strong></div>
+              <div className="queue-detail-row"><span>Processo</span><strong className="mono">{selected.processo_id || '—'}</strong></div>
+              <div className="queue-detail-row"><span>Chave</span><strong className="mono">{selected.chave_acesso || '—'}</strong></div>
+              <div className="queue-detail-row"><span>CNPJ/CPF</span><strong>{selected.cnpj_cpf || '—'}</strong></div>
+              <div className="queue-detail-row"><span>Tipo</span><strong>{selected.tipo_nota || '—'}</strong></div>
+            </div>
+
+            <div className="queue-sheet-group">
+              <div className="queue-sheet-group-title">Partes envolvidas</div>
+              <div className="queue-detail-row"><span>Empresa</span><strong>{selected.queue_empresa}</strong></div>
+              <div className="queue-detail-row"><span>Prestador</span><strong>{selected.queue_prestador}</strong></div>
+            </div>
+          </div>
         </div>
 
-        <div className="queue-detail-block">
-          <div className="card-title" style={{ marginBottom: 12 }}>Contexto operacional</div>
-          <div className="queue-detail-row"><span>Valor líquido</span><strong>{fmtMoney(selected.valor_liquido)}</strong></div>
-          <div className="queue-detail-row"><span>IRRF</span><strong>{fmtMoney(selected.irrf)}</strong></div>
-          <div className="queue-detail-row"><span>INSS</span><strong>{fmtMoney(selected.inss)}</strong></div>
-          <div className="queue-detail-row"><span>ISS</span><strong>{fmtMoney(selected.iss)}</strong></div>
-          <div className="queue-detail-row"><span>Atualização</span><strong>{fmtDate(selected.updated_at || selected.created_at)}</strong></div>
+        <div className="queue-sheet-section queue-sheet-section-wide">
+          <div className="card-title" style={{ marginBottom: 14 }}>Valores e contexto fiscal</div>
+          <div className="queue-sheet-grid queue-sheet-grid-2">
+            <div className="queue-sheet-group">
+              <div className="queue-detail-row"><span>Valor total</span><strong>{fmtMoney(selected.valor_total)}</strong></div>
+              <div className="queue-detail-row"><span>Valor líquido</span><strong>{fmtMoney(selected.valor_liquido)}</strong></div>
+              <div className="queue-detail-row"><span>IRRF</span><strong>{fmtMoney(selected.irrf)}</strong></div>
+            </div>
+
+            <div className="queue-sheet-group">
+              <div className="queue-detail-row"><span>INSS</span><strong>{fmtMoney(selected.inss)}</strong></div>
+              <div className="queue-detail-row"><span>ISS</span><strong>{fmtMoney(selected.iss)}</strong></div>
+              <div className="queue-detail-row"><span>CSRF</span><strong>{fmtMoney(selected.csrf)}</strong></div>
+            </div>
+          </div>
         </div>
-      </div>
+
+        <div className="queue-sheet-section">
+          <div className="card-title" style={{ marginBottom: 14 }}>Contexto operacional complementar</div>
+          <div className="queue-sheet-grid">
+            <div className="queue-detail-row"><span>Entrada</span><strong>{fmtDate(selected.queue_entrada)}</strong></div>
+            <div className="queue-detail-row"><span>Atualização</span><strong>{fmtDate(selected.updated_at || selected.created_at)}</strong></div>
+            <div className="queue-detail-row"><span>Responsável</span><strong>{selected.queue_responsavel}</strong></div>
+            <div className="queue-detail-row"><span>Divergência</span><Badge tone={selected.queue_divergencia_final ? 'warn' : 'success'}>{selected.queue_divergencia}</Badge></div>
+          </div>
+        </div>
+      </section>
 
       <QueueNoteDocuments baseUrl={baseUrl} selected={selected} toast={toast} />
 
-      <div className="queue-detail-block">
+      <div className="queue-detail-block queue-analysis-highlight">
         <div className="card-title" style={{ marginBottom: 12 }}>Comparativo de tributos</div>
+        <div style={{ marginBottom: 10, fontSize: 11, color: 'var(--text-3)' }}>
+          Informado (NF): valor que veio na nota fiscal. Calculado (Sistema): valor calculado pelo sistema segundo a regra. Diferença: variação entre os dois.
+        </div>
         <div className="table-wrap queue-compare-table" style={{ border: 'none', borderRadius: 0 }}>
           <table>
             <thead>
               <tr>
                 <th>Tributo</th>
-                <th>Informado</th>
-                <th>Calculado</th>
-                <th>Diferença</th>
+                <th title="Valor que veio na nota fiscal">Informado (NF)</th>
+                <th title="Valor calculado pelo sistema segundo a regra">Calculado (Sistema)</th>
+                <th title="Diferença entre o valor informado e o valor calculado">Diferença</th>
               </tr>
             </thead>
             <tbody>
@@ -1127,7 +1170,7 @@ function QueueAnalysisContent({
         </div>
       </div>
 
-      <div className="queue-detail-grid">
+      <div className="queue-detail-grid queue-analysis-footer">
         <div className="queue-detail-block">
           <div className="card-title" style={{ marginBottom: 12 }}>Análise interna</div>
           <div className="field">
@@ -1332,6 +1375,13 @@ function ExecucaoPage({ baseUrl, toast }) {
 
   const executar = async (path) => {
     if (!form.cert_aliases.length) { toast('Selecione ao menos um alias.', 'error'); return; }
+    const startDate = new Date(`${form.start}T00:00:00`);
+    const endDate = new Date(`${form.end}T00:00:00`);
+    const diffDays = (endDate - startDate) / 86400000;
+    if (Number.isFinite(diffDays) && diffDays > 31) {
+      toast('DATA SUPERIOR A 31 DIAS', 'error');
+      return;
+    }
     setLoading(true); setResult(null);
     try {
       const chunkDays = Number(form.chunk_days);
