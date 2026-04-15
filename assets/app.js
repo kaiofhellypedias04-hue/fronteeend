@@ -2,6 +2,10 @@
    Portal de Auditoria Fiscal NFS-e
    ───────────────────────────────────────────────────────────── */
 const { useState, useEffect, useMemo, useCallback, useRef } = React;
+console.info('[app.js] bundle loaded', {
+  marker: 'export-runtime-debug-v1',
+  loadedAt: new Date().toISOString(),
+});
 
 // ── Constantes ──────────────────────────────────────────────
 const MENU = [
@@ -2849,14 +2853,34 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
             <button
               className="btn btn-ghost btn-sm"
               disabled={!filteredItems.length}
-              onClick={() => dlCSV(exportQueueRows, `${isVariantB ? 'fila_trabalho_b' : 'fila_trabalho'}_${today()}.csv`)}
+              onClick={() => {
+                console.log('[Exportar fila] click', {
+                  variant: isVariantB ? 'b' : 'a',
+                  fileName: `${isVariantB ? 'fila_trabalho_b' : 'fila_trabalho'}_${today()}.csv`,
+                  rowsLength: exportQueueRows.length,
+                });
+                console.log('[Exportar fila] first row', exportQueueRows[0]);
+                console.log('[Exportar fila] headers', Object.keys(exportQueueRows[0] || {}));
+                console.log('[Exportar fila] observacao interna first row', exportQueueRows[0]?.['Observação interna']);
+                dlCSV(exportQueueRows, `${isVariantB ? 'fila_trabalho_b' : 'fila_trabalho'}_${today()}.csv`);
+              }}
             >
               <IconDown /> Exportar fila
             </button>
             <button
               className="btn btn-ghost btn-sm"
               disabled={!filteredItems.length}
-              onClick={() => exportRelatorioCSV(exportQueueDetailedRows, `${isVariantB ? 'fila_trabalho_b_detalhado' : 'fila_trabalho_detalhado'}_${today()}.csv`)}
+              onClick={() => {
+                console.log('[Exportar detalhado] click', {
+                  variant: isVariantB ? 'b' : 'a',
+                  fileName: `${isVariantB ? 'fila_trabalho_b_detalhado' : 'fila_trabalho_detalhado'}_${today()}.csv`,
+                  rowsLength: exportQueueDetailedRows.length,
+                });
+                console.log('[Exportar detalhado] first row', exportQueueDetailedRows[0]);
+                console.log('[Exportar detalhado] headers', Object.keys(exportQueueDetailedRows[0] || {}));
+                console.log('[Exportar detalhado] observacao_interna first row', exportQueueDetailedRows[0]?.observacao_interna);
+                exportRelatorioCSV(exportQueueDetailedRows, `${isVariantB ? 'fila_trabalho_b_detalhado' : 'fila_trabalho_detalhado'}_${today()}.csv`);
+              }}
             >
               <IconDown /> Exportar detalhado
             </button>
