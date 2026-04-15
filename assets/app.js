@@ -662,7 +662,6 @@ function exportRelatorioCSV(rows, name) {
 
   const relatorioColunas = RELATORIO_COLUNAS.filter(col => {
     if (col.key === 'conferencia') return rows.some(row => get(row, 'conferencia') !== '');
-    if (col.key === 'observacao_interna') return rows.some(row => get(row, 'observacao_interna') !== '');
     return true;
   });
   const header = relatorioColunas.map(c => esc(c.header)).join(';');
