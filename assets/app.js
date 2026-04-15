@@ -2718,6 +2718,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
       'Divergência': item.queue_divergencia,
       'Prioridade': normalizeQueuePriority(item.queue_prioridade) === 'alta' ? 'Alta' : normalizeQueuePriority(item.queue_prioridade) === 'media' ? 'Média' : 'Baixa',
       'Responsável': item.queue_responsavel,
+      'Observação interna': item.observacao_interna || '',
       'Entrada': fmtDate(item.queue_entrada),
       'SLA': item.queue_sla?.label || '—',
     }));
