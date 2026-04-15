@@ -610,6 +610,7 @@ const RELATORIO_COLUNAS = [
   { header: 'Prioridade',             key: 'prioridade' },
   { header: 'Responsável',            key: 'responsavel' },
   { header: 'Conferência',            key: 'conferencia' },
+  { header: 'Observação interna',     key: 'observacao_interna' },
   { header: 'Status CSRF',            key: 'status_csrf' },
   { header: 'Status IRRF',            key: 'status_irrf' },
   { header: 'Status INSS',            key: 'status_inss' },
@@ -642,6 +643,7 @@ function exportRelatorioCSV(rows, name) {
       prioridade:           ['prioridade', 'queue_prioridade', 'prioridade_manual'],
       responsavel:          ['responsavel', 'queue_responsavel'],
       conferencia:          ['conferencia'],
+      observacao_interna:   ['observacao_interna'],
       status_csrf:          ['status_csrf'],
       status_irrf:          ['status_irrf'],
       status_inss:          ['status_inss'],
@@ -654,9 +656,11 @@ function exportRelatorioCSV(rows, name) {
     return '';
   };
 
-  const relatorioColunas = rows.some(row => get(row, 'conferencia') !== '')
-    ? RELATORIO_COLUNAS
-    : RELATORIO_COLUNAS.filter(col => col.key !== 'conferencia');
+  const relatorioColunas = RELATORIO_COLUNAS.filter(col => {
+    if (col.key === 'conferencia') return rows.some(row => get(row, 'conferencia') !== '');
+    if (col.key === 'observacao_interna') return rows.some(row => get(row, 'observacao_interna') !== '');
+    return true;
+  });
   const header = relatorioColunas.map(c => esc(c.header)).join(';');
   const body   = rows.map(r => relatorioColunas.map(c => esc(get(r, c.key))).join(';'));
   const csv    = '\uFEFF' + [header, ...body].join('\n');
@@ -2728,6 +2732,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
       prioridade: normalizeQueuePriority(item.queue_prioridade) === 'alta' ? 'Alta' : normalizeQueuePriority(item.queue_prioridade) === 'media' ? 'Media' : 'Baixa',
       responsavel: item.queue_responsavel || '',
       conferencia: queueConferenceStatus(item.queue_responsavel),
+      observacao_interna: item.observacao_interna || '',
     }));
   }, [filteredItems]);
 
