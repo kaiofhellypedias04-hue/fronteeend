@@ -248,6 +248,10 @@ function hasAssignedQueueResponsible(value) {
   return !!normalized && normalized !== 'nao atribuido';
 }
 
+function queueConferenceStatus(value) {
+  return hasAssignedQueueResponsible(value) ? 'Analisado' : 'Pendente';
+}
+
 function queueSlaFromDate(dateValue, prioridade) {
   if (!dateValue) return { label: 'Sem prazo', tone: 'neutral', hours: null };
   const base = new Date(dateValue);
@@ -605,6 +609,7 @@ const RELATORIO_COLUNAS = [
   { header: 'Status',                 key: 'status' },
   { header: 'Prioridade',             key: 'prioridade' },
   { header: 'Responsável',            key: 'responsavel' },
+  { header: 'Conferência',            key: 'conferencia' },
   { header: 'Status CSRF',            key: 'status_csrf' },
   { header: 'Status IRRF',            key: 'status_irrf' },
   { header: 'Status INSS',            key: 'status_inss' },
@@ -636,6 +641,7 @@ function exportRelatorioCSV(rows, name) {
       status:               ['status', 'queue_status', 'status_fila', 'status_fila_manual'],
       prioridade:           ['prioridade', 'queue_prioridade', 'prioridade_manual'],
       responsavel:          ['responsavel', 'queue_responsavel'],
+      conferencia:          ['conferencia'],
       status_csrf:          ['status_csrf'],
       status_irrf:          ['status_irrf'],
       status_inss:          ['status_inss'],
@@ -648,8 +654,11 @@ function exportRelatorioCSV(rows, name) {
     return '';
   };
 
-  const header = RELATORIO_COLUNAS.map(c => esc(c.header)).join(';');
-  const body   = rows.map(r => RELATORIO_COLUNAS.map(c => esc(get(r, c.key))).join(';'));
+  const relatorioColunas = rows.some(row => get(row, 'conferencia') !== '')
+    ? RELATORIO_COLUNAS
+    : RELATORIO_COLUNAS.filter(col => col.key !== 'conferencia');
+  const header = relatorioColunas.map(c => esc(c.header)).join(';');
+  const body   = rows.map(r => relatorioColunas.map(c => esc(get(r, c.key))).join(';'));
   const csv    = '\uFEFF' + [header, ...body].join('\n');
   const blob   = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const url    = URL.createObjectURL(blob);
@@ -2718,6 +2727,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
       status: item.queue_status || '',
       prioridade: normalizeQueuePriority(item.queue_prioridade) === 'alta' ? 'Alta' : normalizeQueuePriority(item.queue_prioridade) === 'media' ? 'Media' : 'Baixa',
       responsavel: item.queue_responsavel || '',
+      conferencia: queueConferenceStatus(item.queue_responsavel),
     }));
   }, [filteredItems]);
 
@@ -3024,7 +3034,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                         <td><QueueSlaBadge sla={item.queue_sla} /></td>
                         <td className="actions">
                           <button
-                            className="btn btn-primary btn-xs"
+                            className={cn('btn btn-xs', hasAssignedQueueResponsible(item.queue_responsavel) ? 'btn-primary' : 'btn-danger')}
                             onClick={e => { e.stopPropagation(); setSelected(item); }}
                           >
                             {hasAssignedQueueResponsible(item.queue_responsavel) ? 'Analisado' : 'Analisar'}
