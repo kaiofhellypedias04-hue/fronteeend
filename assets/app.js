@@ -3149,7 +3149,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
               </select>
             </div>
             <div className="field queue-filter-card">
-              <label className="label">ConferÃªncia</label>
+              <label className="label">Conferência</label>
               <select className="select" value={filters.conferencia} onChange={e => setFilter('conferencia', e.target.value)}>
                 <option value="">Todos</option>
                 <option value="Analisar">Analisar</option>
@@ -3164,7 +3164,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
               </select>
             </div>
             <div className="field queue-filter-card">
-              <label className="label">NÃºmero da nota</label>
+              <label className="label">Número da nota</label>
               <input
                 className="input"
                 value={filters.numero_nota}
@@ -3234,6 +3234,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                   <thead>
                     <tr>
                       <th>N° da nota</th>
+                      <th></th>
                       <th>Competência</th>
                       <th>Empresa</th>
                       <th>Prestador</th>
@@ -3248,7 +3249,6 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                       <th>Responsável</th>
                       <th>Entrada</th>
                       <th>SLA</th>
-                      <th></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3261,6 +3261,14 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                         onClick={() => setSelected(item)}
                       >
                         <td className="primary mono">{item.queue_numero_nota}</td>
+                        <td className="actions">
+                          <button
+                            className={cn('btn btn-xs', hasAssignedQueueResponsible(item.queue_responsavel) ? 'btn-primary' : 'btn-danger')}
+                            onClick={e => { e.stopPropagation(); setSelected(item); }}
+                          >
+                            {hasAssignedQueueResponsible(item.queue_responsavel) ? 'Analisado' : 'Analisar'}
+                          </button>
+                        </td>
                         <td className="mono">{item.queue_competencia}</td>
                         <td>{item.queue_empresa}</td>
                         <td style={{ maxWidth: 180, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={item.queue_prestador}>
@@ -3281,14 +3289,6 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                         <td>{item.queue_responsavel}</td>
                         <td className="mono">{fmtDate(item.queue_entrada)}</td>
                         <td><QueueSlaBadge sla={item.queue_sla} /></td>
-                        <td className="actions">
-                          <button
-                            className={cn('btn btn-xs', hasAssignedQueueResponsible(item.queue_responsavel) ? 'btn-primary' : 'btn-danger')}
-                            onClick={e => { e.stopPropagation(); setSelected(item); }}
-                          >
-                            {hasAssignedQueueResponsible(item.queue_responsavel) ? 'Analisado' : 'Analisar'}
-                          </button>
-                        </td>
                       </tr>
                     ))}
                   </tbody>
