@@ -617,6 +617,17 @@ function downloadUrl(url, filename) {
   a.click();
 }
 
+async function downloadResolvedUrl(url, filename) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    downloadBrowserBlob(blob, filename);
+  } catch {
+    downloadUrl(url, filename);
+  }
+}
+
 async function downloadBlob(baseUrl, processId, arquivoId, filename) {
   const blob = await fetchProcessFileBlob(baseUrl, processId, arquivoId);
   downloadBrowserBlob(blob, filename);
@@ -962,6 +973,8 @@ function normalizeNoteDocument(baseUrl, kind, source) {
     return {
       kind,
       url,
+      viewUrl: url,
+      downloadUrl: url,
       name: kind === 'xml' ? 'documento.xml' : 'documento.pdf',
       processId: null,
       fileId: null,
@@ -970,7 +983,22 @@ function normalizeNoteDocument(baseUrl, kind, source) {
 
   if (typeof source !== 'object' || Array.isArray(source)) return null;
 
-  const url = resolveDocumentUrl(baseUrl,
+  const viewUrl = resolveDocumentUrl(baseUrl,
+    source.view_url ||
+    source.viewUrl ||
+    source.preview_url ||
+    source.previewUrl ||
+    source.visualizacao_url ||
+    source.visualizacaoUrl ||
+    source.url ||
+    source.file_url ||
+    source.arquivo_url ||
+    source.href ||
+    source.link ||
+    source.xml_url ||
+    source.pdf_url
+  );
+  const downloadUrlValue = resolveDocumentUrl(baseUrl,
     source.download_url ||
     source.downloadUrl ||
     source.url ||
@@ -983,11 +1011,14 @@ function normalizeNoteDocument(baseUrl, kind, source) {
   );
   const processId = source.processo_id || null;
   const fileId = source.id || null;
+  const url = downloadUrlValue || viewUrl;
   if (!url && !(processId && fileId)) return null;
 
   return {
     kind,
     url,
+    viewUrl: viewUrl || url,
+    downloadUrl: downloadUrlValue || url,
     name: source.nome_arquivo || source.filename || source.nome || source.name || (kind === 'xml' ? 'documento.xml' : 'documento.pdf'),
     processId,
     fileId,
@@ -1062,8 +1093,8 @@ function QueueNoteDocuments({ baseUrl, selected, toast }) {
     setPendingAction(key);
     try {
       if (file.url) {
-        if (mode === 'view') openUrlInNewTab(file.url);
-        else downloadUrl(file.url, file.name || `${kind}.bin`);
+        if (mode === 'view') openUrlInNewTab(file.viewUrl || file.url);
+        else await downloadResolvedUrl(file.downloadUrl || file.url, file.name || `${kind}.bin`);
       } else if (file.processId && file.fileId) {
         if (mode === 'view') await openProcessFile(baseUrl, file.processId, file.fileId);
         else await downloadBlob(baseUrl, file.processId, file.fileId, file.name || `${kind}.bin`);
@@ -2674,6 +2705,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
   const [reapplyingRules, setReapplyingRules] = useState(false);
   const [smartSearch, setSmartSearch] = useState('');
   const queueLoadMorePendingRef = useRef(false);
+  const [queueReloadTick, setQueueReloadTick] = useState(0);
   const [ruleForm, setRuleForm] = useState({
     id: null,
     campo: 'descricao_servico',
@@ -2815,7 +2847,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
 
     loadQueuePage();
     return () => { cancelled = true; };
-  }, [baseUrl, filters.status, filters.empresa, filters.data_tipo, filters.data_inicio, filters.data_fim, page, queuePageSize, serverFilterKey]);
+  }, [baseUrl, filters.status, filters.empresa, filters.data_tipo, filters.data_inicio, filters.data_fim, page, queuePageSize, serverFilterKey, queueReloadTick]);
 
   useEffect(() => {
     queueLoadMorePendingRef.current = false;
@@ -2848,6 +2880,12 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     setPage(1);
     setFilters(prev => ({ ...prev, [key]: value }));
   };
+
+  const refreshQueue = useCallback(() => {
+    queueLoadMorePendingRef.current = false;
+    setPage(1);
+    setQueueReloadTick(prev => prev + 1);
+  }, []);
 
   const loadNextQueuePage = useCallback(() => {
     if (!hasMoreQueuePages) return;
@@ -2947,12 +2985,27 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
         responsavel: responsavelFila,
         queue_status: normalizeQueueStatus(statusFila),
         queue_prioridade: normalizeQueuePriority(prioridadeFila),
-        queue_responsavel: responsavelFila || 'Não atribuído',
+        queue_responsavel: responsavelFila || 'N\u00e3o atribu\u00eddo',
         queue_sla: queueSlaFromDate(prev.queue_entrada, prioridadeFila),
         updated_at: new Date().toISOString(),
       } : prev);
-      toast('Análise interna salva com sucesso.', 'success');
-      filaData.reload();
+      setFilaData(prev => ({
+        ...prev,
+        items: prev.items.map(item => item.id !== selected.id ? item : {
+          ...item,
+          observacao_interna: obsInterna,
+          status_fila_manual: statusFila,
+          status_fila: statusFila,
+          prioridade_manual: prioridadeFila,
+          responsavel: responsavelFila,
+          queue_status: normalizeQueueStatus(statusFila),
+          queue_prioridade: normalizeQueuePriority(prioridadeFila),
+          queue_responsavel: responsavelFila || 'N\u00e3o atribu\u00eddo',
+          queue_sla: queueSlaFromDate(item.queue_entrada, prioridadeFila),
+          updated_at: new Date().toISOString(),
+        }),
+      }));
+      toast('An\u00e1lise interna salva com sucesso.', 'success');
     } catch (e) {
       toast(e.message, 'error');
     } finally {
@@ -3068,7 +3121,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
             >
               <IconDown /> Exportar detalhado
             </button>
-            <button className="btn btn-ghost btn-sm" onClick={filaData.reload}>
+            <button className="btn btn-ghost btn-sm" onClick={refreshQueue}>
               <IconRefresh /> Atualizar
             </button>
           </>
