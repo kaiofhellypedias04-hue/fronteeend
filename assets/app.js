@@ -186,8 +186,14 @@ function normFilterValue(value) {
   return String(value || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9:]+/gi, ' ')
+    .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
+}
+
+function compactFilterValue(value) {
+  return normFilterValue(value).replace(/\s+/g, '');
 }
 
 function normalizeQueuePriority(value) {
@@ -253,7 +259,7 @@ function hasAssignedQueueResponsible(value) {
 }
 
 function queueConferenceStatus(value) {
-  return hasAssignedQueueResponsible(value) ? 'Analisado' : 'Pendente';
+  return hasAssignedQueueResponsible(value) ? 'Analisado' : 'Analisar';
 }
 
 function queueSlaFromDate(dateValue, prioridade) {
@@ -448,10 +454,11 @@ function matchQueueSmartSearch(item, query) {
 
   const fields = {
     nota: normFilterValue(item.queue_numero_nota),
+    chave: normFilterValue(item.chave_acesso),
     competencia: normFilterValue(item.queue_competencia),
     empresa: normFilterValue(item.queue_empresa),
     prestador: normFilterValue(item.queue_prestador),
-    valor: normFilterValue(fmtMoney(item.valor_total)),
+    valor: normFilterValue(`${fmtMoney(item.valor_total)} ${item.valor_total ?? ''}`),
     status_nota: normFilterValue(item.queue_status_nota),
     status: normFilterValue(item.queue_status),
     divergencia: normFilterValue(item.queue_divergencia),
@@ -464,6 +471,7 @@ function matchQueueSmartSearch(item, query) {
   const aliases = {
     n: 'nota',
     numero: 'nota',
+    chave: 'chave',
     competencia: 'competencia',
     empresa: 'empresa',
     prestador: 'prestador',
@@ -478,17 +486,61 @@ function matchQueueSmartSearch(item, query) {
     sla: 'sla',
   };
 
+  const compactFields = Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [key, compactFilterValue(value)])
+  );
   const haystack = Object.values(fields).join(' ');
-  const tokens = raw.split(/\s+/).map(normFilterValue).filter(Boolean);
+  const compactHaystack = compactFilterValue(haystack);
+  const parts = raw.split(/\s+/).filter(Boolean);
+  const clauses = [];
+  let current = null;
 
-  return tokens.every(token => {
-    const idx = token.indexOf(':');
+  const pushCurrent = () => {
+    if (!current) return;
+    const normalizedValue = normFilterValue(current.value);
+    if (normalizedValue) clauses.push({ key: current.key, value: normalizedValue });
+    current = null;
+  };
+
+  parts.forEach(part => {
+    const idx = part.indexOf(':');
     if (idx > 0) {
-      const key = aliases[token.slice(0, idx)];
-      const value = token.slice(idx + 1);
-      if (key && value) return fields[key].includes(value);
+      const alias = aliases[normFilterValue(part.slice(0, idx))];
+      const value = part.slice(idx + 1);
+      if (alias) {
+        pushCurrent();
+        current = { key: alias, value };
+        return;
+      }
     }
-    return haystack.includes(token);
+
+    if (current) {
+      current.value = `${current.value} ${part}`;
+      return;
+    }
+
+    const normalizedPart = normFilterValue(part);
+    if (normalizedPart) clauses.push({ key: null, value: normalizedPart });
+  });
+
+  pushCurrent();
+
+  const matchesText = (fieldValue, compactFieldValue, value) => {
+    const normalizedValue = normFilterValue(value);
+    if (!normalizedValue) return true;
+
+    const compactValue = compactFilterValue(normalizedValue);
+    if (fieldValue.includes(normalizedValue)) return true;
+    if (compactValue.length >= 2 && compactFieldValue.includes(compactValue)) return true;
+
+    const tokens = normalizedValue.split(' ').filter(token => token.length >= 2);
+    return tokens.length > 0 && tokens.every(token => fieldValue.includes(token));
+  };
+
+  return clauses.every(({ key, value }) => {
+    if (!value) return true;
+    if (key) return matchesText(fields[key] || '', compactFields[key] || '', value);
+    return matchesText(haystack, compactHaystack, value);
   });
 }
 
@@ -852,6 +904,7 @@ function getQueueDefaultFilters() {
     empresa: '',
     prioridade: '',
     responsavel: '',
+    conferencia: '',
     data_tipo: 'entrada',
     data_inicio: baseDate,
     data_fim: baseDate,
@@ -2606,7 +2659,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     ativo: true,
   });
   const [filters, setFilters] = useState(getQueueDefaultFilters);
-  const hasClientSideFilters = !!(filters.prioridade || filters.responsavel || smartSearch.trim());
+  const hasClientSideFilters = !!(filters.prioridade || filters.responsavel || filters.conferencia || smartSearch.trim());
 
   const filaData = useAsync(() => {
     const q = new URLSearchParams({
@@ -2636,6 +2689,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
   const filteredItems = queueItems.filter(item => {
     if (filters.prioridade && normFilterValue(item.queue_prioridade) !== normFilterValue(filters.prioridade)) return false;
     if (filters.responsavel && normFilterValue(item.queue_responsavel) !== normFilterValue(filters.responsavel)) return false;
+    if (filters.conferencia && queueConferenceStatus(item.queue_responsavel) !== filters.conferencia) return false;
     if (!matchQueueSmartSearch(item, smartSearch)) return false;
     return true;
   });
@@ -2963,6 +3017,14 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
               </select>
             </div>
             <div className="field">
+              <label className="label">ConferÃªncia</label>
+              <select className="select" value={filters.conferencia} onChange={e => setFilter('conferencia', e.target.value)}>
+                <option value="">Todos</option>
+                <option value="Analisar">Analisar</option>
+                <option value="Analisado">Analisado</option>
+              </select>
+            </div>
+            <div className="field">
               <label className="label">Filtrar por</label>
               <select className="select" value={filters.data_tipo} onChange={e => setFilter('data_tipo', e.target.value)}>
                 <option value="entrada">Entrada</option>
@@ -2983,7 +3045,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                 className="input"
                 value={smartSearch}
                 onChange={e => { setPage(1); setSmartSearch(e.target.value); }}
-                placeholder="Busque em todas as colunas ou use competencia:, empresa:, status:, prioridade:, responsavel:, nota:, prestador:, valor:, entrada:, sla:"
+                placeholder="Busque em todas as colunas ou use competencia:, empresa:, prestador:, nota:, chave:, valor:, status:, prioridade:, responsavel:, entrada:, sla:"
               />
             </div>
             <div className="field queue-search-field">
