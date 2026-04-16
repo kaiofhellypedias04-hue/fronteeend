@@ -544,6 +544,13 @@ function matchQueueSmartSearch(item, query) {
   });
 }
 
+function includesNormalizedFilter(source, query, { compact = false } = {}) {
+  const sourceValue = compact ? compactFilterValue(source) : normFilterValue(source);
+  const queryValue = compact ? compactFilterValue(query) : normFilterValue(query);
+  if (!queryValue) return true;
+  return sourceValue.includes(queryValue);
+}
+
 async function api(baseUrl, path, opts = {}) {
   const method = opts.method || 'GET';
   const headers = new Headers(opts.headers || {});
@@ -905,6 +912,9 @@ function getQueueDefaultFilters() {
     prioridade: '',
     responsavel: '',
     conferencia: '',
+    numero_nota: '',
+    valor: '',
+    prestador: '',
     data_tipo: 'entrada',
     data_inicio: baseDate,
     data_fim: baseDate,
@@ -2659,7 +2669,15 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     ativo: true,
   });
   const [filters, setFilters] = useState(getQueueDefaultFilters);
-  const hasClientSideFilters = !!(filters.prioridade || filters.responsavel || filters.conferencia || smartSearch.trim());
+  const hasClientSideFilters = !!(
+    filters.prioridade ||
+    filters.responsavel ||
+    filters.conferencia ||
+    filters.numero_nota ||
+    filters.valor ||
+    filters.prestador ||
+    smartSearch.trim()
+  );
 
   const filaData = useAsync(() => {
     const q = new URLSearchParams({
@@ -2690,6 +2708,9 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     if (filters.prioridade && normFilterValue(item.queue_prioridade) !== normFilterValue(filters.prioridade)) return false;
     if (filters.responsavel && normFilterValue(item.queue_responsavel) !== normFilterValue(filters.responsavel)) return false;
     if (filters.conferencia && queueConferenceStatus(item.queue_responsavel) !== filters.conferencia) return false;
+    if (filters.numero_nota && !includesNormalizedFilter(item.queue_numero_nota, filters.numero_nota)) return false;
+    if (filters.valor && !includesNormalizedFilter(`${fmtMoney(item.valor_total)} ${item.valor_total ?? ''}`, filters.valor, { compact: true })) return false;
+    if (filters.prestador && !includesNormalizedFilter(item.queue_prestador, filters.prestador)) return false;
     if (!matchQueueSmartSearch(item, smartSearch)) return false;
     return true;
   });
@@ -3031,6 +3052,33 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                 <option value="entrada">Entrada</option>
                 <option value="emissao">Emissão</option>
               </select>
+            </div>
+            <div className="field queue-filter-card">
+              <label className="label">NÃºmero da nota</label>
+              <input
+                className="input"
+                value={filters.numero_nota}
+                onChange={e => setFilter('numero_nota', e.target.value)}
+                placeholder="Buscar nÃºmero"
+              />
+            </div>
+            <div className="field queue-filter-card">
+              <label className="label">Valor</label>
+              <input
+                className="input"
+                value={filters.valor}
+                onChange={e => setFilter('valor', e.target.value)}
+                placeholder="Ex.: 1234,56"
+              />
+            </div>
+            <div className="field queue-filter-card">
+              <label className="label">Nome do prestador</label>
+              <input
+                className="input"
+                value={filters.prestador}
+                onChange={e => setFilter('prestador', e.target.value)}
+                placeholder="Buscar prestador"
+              />
             </div>
             <div className="field queue-filter-card">
               <label className="label">Data inicial</label>
