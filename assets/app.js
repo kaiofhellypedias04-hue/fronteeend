@@ -551,6 +551,20 @@ function includesNormalizedFilter(source, query, { compact = false } = {}) {
   return sourceValue.includes(queryValue);
 }
 
+function matchQueueNumeroNotaFilter(noteValue, query) {
+  const rawQuery = String(query || '').trim();
+  if (!rawQuery) return true;
+
+  const compactQuery = compactFilterValue(rawQuery);
+  if (/^\d+$/.test(compactQuery)) {
+    const sourceDigits = String(noteValue || '').replace(/\D+/g, '');
+    if (sourceDigits) return sourceDigits === compactQuery;
+    return compactFilterValue(noteValue) === compactQuery;
+  }
+
+  return includesNormalizedFilter(noteValue, rawQuery);
+}
+
 async function api(baseUrl, path, opts = {}) {
   const method = opts.method || 'GET';
   const headers = new Headers(opts.headers || {});
@@ -2646,8 +2660,8 @@ function ProcessosPage({ baseUrl, toast }) {
 function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVisible = true, onToggleSidebar = null }) {
   const isVariantB = variant === 'b';
   const queueRulesEnabled = false;
+  const queuePageSize = 100;
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState(null);
   const [rulesModalOpen, setRulesModalOpen] = useState(false);
@@ -2659,6 +2673,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
   const [savingRule, setSavingRule] = useState(false);
   const [reapplyingRules, setReapplyingRules] = useState(false);
   const [smartSearch, setSmartSearch] = useState('');
+  const queueLoadMorePendingRef = useRef(false);
   const [ruleForm, setRuleForm] = useState({
     id: null,
     campo: 'descricao_servico',
@@ -2679,23 +2694,28 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     smartSearch.trim()
   );
 
-  const filaData = useAsync(() => {
-    const q = new URLSearchParams({
-      page: String(hasClientSideFilters ? 1 : page),
-      page_size: String(hasClientSideFilters ? 500 : pageSize),
-    });
-    if (filters.status) q.set('status', filters.status);
-    if (filters.empresa) q.set('cert_alias', filters.empresa);
-    if (filters.data_tipo) q.set('data_tipo', filters.data_tipo);
-    if (filters.data_inicio) q.set('data_inicio', filters.data_inicio);
-    if (filters.data_fim) q.set('data_fim', filters.data_fim);
-    return api(baseUrl, `/nfse?${q.toString()}`);
-  }, [baseUrl, filters.status, filters.empresa, filters.data_tipo, filters.data_inicio, filters.data_fim, hasClientSideFilters, page, pageSize]);
+  const serverFilterKey = useMemo(() => JSON.stringify({
+    baseUrl,
+    status: filters.status,
+    empresa: filters.empresa,
+    data_tipo: filters.data_tipo,
+    data_inicio: filters.data_inicio,
+    data_fim: filters.data_fim,
+  }), [baseUrl, filters.status, filters.empresa, filters.data_tipo, filters.data_inicio, filters.data_fim]);
+  const [filaData, setFilaData] = useState({
+    data: null,
+    items: [],
+    loading: false,
+    loadingMore: false,
+    error: '',
+    total: 0,
+    lastPageCount: 0,
+  });
   const rulesData = { loading: false, error: null, data: [], reload: () => {} };
 
   const queueItems = useMemo(() => {
-    return (filaData.data?.items || []).map(mapQueueItem);
-  }, [filaData.data]);
+    return filaData.items.map(mapQueueItem);
+  }, [filaData.items]);
 
   const filterOptions = useMemo(() => {
     return {
@@ -2708,7 +2728,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     if (filters.prioridade && normFilterValue(item.queue_prioridade) !== normFilterValue(filters.prioridade)) return false;
     if (filters.responsavel && normFilterValue(item.queue_responsavel) !== normFilterValue(filters.responsavel)) return false;
     if (filters.conferencia && queueConferenceStatus(item.queue_responsavel) !== filters.conferencia) return false;
-    if (filters.numero_nota && !includesNormalizedFilter(item.queue_numero_nota, filters.numero_nota)) return false;
+    if (filters.numero_nota && !matchQueueNumeroNotaFilter(item.queue_numero_nota, filters.numero_nota)) return false;
     if (filters.valor && !includesNormalizedFilter(`${fmtMoney(item.valor_total)} ${item.valor_total ?? ''}`, filters.valor, { compact: true })) return false;
     if (filters.prestador && !includesNormalizedFilter(item.queue_prestador, filters.prestador)) return false;
     if (!matchQueueSmartSearch(item, smartSearch)) return false;
@@ -2724,21 +2744,98 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     return getQueueCounts(filaData.data, fallback);
   }, [filaData.data, filteredItems]);
 
-  const paginatedItems = useMemo(() => {
-    const start = (page - 1) * pageSize;
-    return filteredItems.slice(start, start + pageSize);
-  }, [filteredItems, page, pageSize]);
-
-  const paginationTotal = hasClientSideFilters
-    ? filteredItems.length
-    : Number(filaData.data?.total) || queueItems.length;
-
-  const visibleItems = hasClientSideFilters ? paginatedItems : queueItems;
+  const visibleItems = filteredItems;
+  const hasMoreQueuePages = useMemo(() => {
+    const total = Number(filaData.total);
+    if (Number.isFinite(total) && total > 0) return filaData.items.length < total;
+    return filaData.lastPageCount === queuePageSize;
+  }, [filaData.items.length, filaData.lastPageCount, filaData.total, queuePageSize]);
+  const exactNumeroNotaQuery = compactFilterValue(filters.numero_nota);
+  const shouldSearchExactNumeroNota = !!exactNumeroNotaQuery && /^\d+$/.test(exactNumeroNotaQuery);
+  const hasExactNumeroNotaLoaded = useMemo(() => {
+    if (!shouldSearchExactNumeroNota) return false;
+    return queueItems.some(item => matchQueueNumeroNotaFilter(item.queue_numero_nota, exactNumeroNotaQuery));
+  }, [queueItems, shouldSearchExactNumeroNota, exactNumeroNotaQuery]);
 
   useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(paginationTotal / pageSize));
-    if (page > totalPages) setPage(1);
-  }, [paginationTotal, page, pageSize]);
+    let cancelled = false;
+
+    const loadQueuePage = async () => {
+      const q = new URLSearchParams({
+        page: String(page),
+        page_size: String(queuePageSize),
+      });
+      if (filters.status) q.set('status', filters.status);
+      if (filters.empresa) q.set('cert_alias', filters.empresa);
+      if (filters.data_tipo) q.set('data_tipo', filters.data_tipo);
+      if (filters.data_inicio) q.set('data_inicio', filters.data_inicio);
+      if (filters.data_fim) q.set('data_fim', filters.data_fim);
+
+      setFilaData(prev => ({
+        ...prev,
+        data: page === 1 ? null : prev.data,
+        items: page === 1 ? [] : prev.items,
+        total: page === 1 ? 0 : prev.total,
+        lastPageCount: page === 1 ? 0 : prev.lastPageCount,
+        loading: page === 1,
+        loadingMore: page > 1,
+        error: '',
+      }));
+
+      try {
+        const data = await api(baseUrl, `/nfse?${q.toString()}`);
+        if (cancelled) return;
+
+        const nextItems = Array.isArray(data?.items) ? data.items : [];
+        setFilaData(prev => {
+          const mergedItems = page === 1
+            ? nextItems
+            : [...prev.items, ...nextItems.filter(item => !prev.items.some(existing => existing.id === item.id))];
+
+          return {
+            data,
+            items: mergedItems,
+            loading: false,
+            loadingMore: false,
+            error: '',
+            total: Number(data?.total) || mergedItems.length,
+            lastPageCount: nextItems.length,
+          };
+        });
+      } catch (e) {
+        if (cancelled) return;
+        setFilaData(prev => ({
+          ...prev,
+          loading: false,
+          loadingMore: false,
+          error: e.message,
+        }));
+      }
+    };
+
+    loadQueuePage();
+    return () => { cancelled = true; };
+  }, [baseUrl, filters.status, filters.empresa, filters.data_tipo, filters.data_inicio, filters.data_fim, page, queuePageSize, serverFilterKey]);
+
+  useEffect(() => {
+    queueLoadMorePendingRef.current = false;
+  }, [serverFilterKey, filaData.loading, filaData.loadingMore]);
+
+  useEffect(() => {
+    if (!shouldSearchExactNumeroNota) return;
+    if (hasExactNumeroNotaLoaded) return;
+    if (!hasMoreQueuePages) return;
+    if (filaData.loading || filaData.loadingMore || queueLoadMorePendingRef.current) return;
+
+    queueLoadMorePendingRef.current = true;
+    setPage(prev => prev + 1);
+  }, [
+    shouldSearchExactNumeroNota,
+    hasExactNumeroNotaLoaded,
+    hasMoreQueuePages,
+    filaData.loading,
+    filaData.loadingMore,
+  ]);
 
   useEffect(() => {
     setObsInterna(selected?.observacao_interna || '');
@@ -2751,6 +2848,19 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     setPage(1);
     setFilters(prev => ({ ...prev, [key]: value }));
   };
+
+  const loadNextQueuePage = useCallback(() => {
+    if (!hasMoreQueuePages) return;
+    if (filaData.loading || filaData.loadingMore || queueLoadMorePendingRef.current) return;
+    queueLoadMorePendingRef.current = true;
+    setPage(prev => prev + 1);
+  }, [filaData.loading, filaData.loadingMore, hasMoreQueuePages]);
+
+  const handleQueueTableScroll = useCallback((e) => {
+    const el = e.currentTarget;
+    if ((el.scrollTop + el.clientHeight) < (el.scrollHeight - 180)) return;
+    loadNextQueuePage();
+  }, [loadNextQueuePage]);
 
   const restoreYesterdayFilters = () => {
     const defaults = getQueueDefaultFilters();
@@ -3119,7 +3229,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
             {filaData.loading ? (
               <div style={{ padding: 24 }}><Loading label="Carregando fila..." /></div>
             ) : (
-              <div className="table-wrap scrollable queue-table" style={{ border: 'none', borderRadius: 0 }}>
+              <div className="table-wrap scrollable queue-table" style={{ border: 'none', borderRadius: 0 }} onScroll={handleQueueTableScroll}>
                 <table>
                   <thead>
                     <tr>
@@ -3185,16 +3295,13 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                 </table>
               </div>
             )}
+            {!filaData.loading && filaData.loadingMore ? (
+              <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border-soft)' }}>
+                <Loading label="Carregando mais itens..." />
+              </div>
+            ) : null}
           </div>
         </div>
-
-        <Pagination
-          page={page}
-          pageSize={pageSize}
-          total={paginationTotal}
-          onPage={setPage}
-          onSize={s => { setPageSize(s); setPage(1); }}
-        />
       </div>
 
       <Modal open={rulesModalOpen && queueRulesEnabled} title="Regras de atribuição automática" onClose={() => { setRulesModalOpen(false); resetRuleForm(); }} wide>
