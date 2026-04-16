@@ -2977,8 +2977,9 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
         ) : null}
 
         <FilterBar label={isVariantB ? 'Filtros operacionais' : 'Filtros da fila'} defaultOpen={false} onToggle={setFiltersOpen}>
-          <div className="form-grid form-cols-4" style={{ marginTop: 16 }} onClick={e => e.stopPropagation()}>
-            <div className="field">
+          <div className="queue-filters-layout" style={{ marginTop: 16 }} onClick={e => e.stopPropagation()}>
+            <div className="queue-filters-grid">
+            <div className="field queue-filter-card">
               <label className="label">Status</label>
               <select className="select" value={filters.status} onChange={e => setFilter('status', e.target.value)}>
                 <option value="">Todos</option>
@@ -2989,7 +2990,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                 <option value="substituida">Substituida</option>
               </select>
             </div>
-            <div className="field">
+            <div className="field queue-filter-card">
               <label className="label">Empresa</label>
               <select className="select" value={filters.empresa} onChange={e => setFilter('empresa', e.target.value)}>
                 <option value="">Todas</option>
@@ -2998,7 +2999,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                 ))}
               </select>
             </div>
-            <div className="field">
+            <div className="field queue-filter-card">
               <label className="label">Prioridade</label>
               <select className="select" value={filters.prioridade} onChange={e => setFilter('prioridade', e.target.value)}>
                 <option value="">Todas</option>
@@ -3007,7 +3008,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                 <option value="baixa">Baixa</option>
               </select>
             </div>
-            <div className="field">
+            <div className="field queue-filter-card">
               <label className="label">Responsável</label>
               <select className="select" value={filters.responsavel} onChange={e => setFilter('responsavel', e.target.value)}>
                 <option value="">Todos</option>
@@ -3016,7 +3017,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                 ))}
               </select>
             </div>
-            <div className="field">
+            <div className="field queue-filter-card">
               <label className="label">ConferÃªncia</label>
               <select className="select" value={filters.conferencia} onChange={e => setFilter('conferencia', e.target.value)}>
                 <option value="">Todos</option>
@@ -3024,22 +3025,22 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                 <option value="Analisado">Analisado</option>
               </select>
             </div>
-            <div className="field">
+            <div className="field queue-filter-card">
               <label className="label">Filtrar por</label>
               <select className="select" value={filters.data_tipo} onChange={e => setFilter('data_tipo', e.target.value)}>
                 <option value="entrada">Entrada</option>
                 <option value="emissao">Emissão</option>
               </select>
             </div>
-            <div className="field">
+            <div className="field queue-filter-card">
               <label className="label">Data inicial</label>
               <input className="input" type="date" value={filters.data_inicio} onChange={e => setFilter('data_inicio', e.target.value)} />
             </div>
-            <div className="field">
+            <div className="field queue-filter-card">
               <label className="label">Data final</label>
               <input className="input" type="date" value={filters.data_fim} onChange={e => setFilter('data_fim', e.target.value)} />
             </div>
-            <div className="field queue-search-field">
+            <div className="field queue-filter-card queue-search-field">
               <label className="label">Busca inteligente</label>
               <input
                 className="input"
@@ -3048,8 +3049,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                 placeholder="Busque em todas as colunas ou use competencia:, empresa:, prestador:, nota:, chave:, valor:, status:, prioridade:, responsavel:, entrada:, sla:"
               />
             </div>
-            <div className="field queue-search-field">
-              <div className="queue-filter-actions">
+            <div className="queue-filter-actions">
                 <button type="button" className="btn btn-ghost btn-sm" onClick={restoreYesterdayFilters}>
                   Voltar para ontem
                 </button>
