@@ -1312,8 +1312,25 @@ function ToastContainer({ toasts }) {
   );
 }
 
+function getDashboardStatusMeta(value) {
+  const normalized = normalizeProcessStatus(value);
+  const map = {
+    running:   { tone: 'info', label: 'Processando agora' },
+    queued:    { tone: 'warn', label: 'Na fila' },
+    completed: { tone: 'success', label: 'Concluido' },
+    failed:    { tone: 'danger', label: 'Falhou' },
+    cancelada: { tone: 'neutral', label: 'Cancelado' },
+  };
+  return map[normalized] || { tone: 'neutral', label: String(value || 'Sem status') };
+}
+
+function DashboardStatusBadge({ value }) {
+  const meta = getDashboardStatusMeta(value);
+  return <Badge tone={meta.tone}>{meta.label}</Badge>;
+}
+
 // ── Page: Dashboard ──────────────────────────────────────────
-function DashboardPage({ baseUrl, toast }) {
+function DashboardPage({ baseUrl, toast, navigate }) {
   const health  = useAsync(() => api(baseUrl, '/health'), [baseUrl]);
   const execs   = useAsync(() => api(baseUrl, '/execucoes?page=1&page_size=5'), [baseUrl]);
   const procs   = useAsync(() => api(baseUrl, '/processos?page=1&page_size=5'), [baseUrl]);
@@ -1326,47 +1343,181 @@ function DashboardPage({ baseUrl, toast }) {
     jobs:      agends.data?.jobs?.filter(j => j.running || j.ativo)?.length || 0,
   }), [health.data, execs.data, procs.data, agends.data]);
 
+  const isRefreshing = health.loading || execs.loading || procs.loading || agends.loading;
+  const apiOnline = stats.status === 'ok';
+  const recentExecutions = execs.data?.items || [];
+  const recentProcesses = procs.data?.items || [];
+  const recentStatusesNeedingAttention = [...recentExecutions, ...recentProcesses]
+    .map(item => normalizeProcessStatus(item?.status))
+    .filter(status => status === 'failed' || status === 'queued');
+  const hasRecentRunningProcess = recentProcesses.some(item => normalizeProcessStatus(item?.status) === 'running');
+
+  const refreshDashboard = useCallback(async () => {
+    await Promise.allSettled([
+      health.reload(),
+      execs.reload(),
+      procs.reload(),
+      agends.reload(),
+    ]);
+  }, [health, execs, procs, agends]);
+
+  const statCards = [
+    {
+      key: 'api',
+      tone: apiOnline ? 'success' : 'danger',
+      icon: IconCheck,
+      title: 'Sistema online',
+      value: apiOnline ? 'Online' : 'Offline',
+      detail: 'Saude da API',
+      helper: apiOnline ? 'API funcionando normalmente' : 'API sem resposta no momento',
+    },
+    {
+      key: 'execucoes',
+      tone: 'info',
+      icon: IconPlay,
+      title: 'Execucoes',
+      value: stats.execucoes,
+      detail: 'Total de execucoes registradas',
+      helper: 'Contagem geral retornada pela API',
+    },
+    {
+      key: 'processos',
+      tone: 'neutral',
+      icon: IconProcess,
+      title: 'Processos',
+      value: stats.processos,
+      detail: 'Total de processos registrados',
+      helper: 'Contagem geral retornada pela API',
+    },
+    {
+      key: 'jobs',
+      tone: 'warn',
+      icon: IconClock,
+      title: 'Agendamentos ativos',
+      value: stats.jobs,
+      detail: 'Jobs automaticos ativos',
+      helper: 'Jobs marcados como running ou ativos',
+    },
+  ];
+
+  const systemSignals = [
+    {
+      key: 'api',
+      tone: apiOnline ? 'success' : 'danger',
+      title: apiOnline ? 'Sistema funcionando normalmente' : 'API indisponivel no momento',
+      detail: apiOnline ? 'A leitura da saude da API esta respondendo normalmente.' : 'O painel nao conseguiu confirmar a saude da API.',
+    },
+    {
+      key: 'jobs',
+      tone: stats.jobs > 0 ? 'info' : 'neutral',
+      title: stats.jobs > 0 ? 'Ha jobs ativos no momento' : 'Nao ha jobs ativos no momento',
+      detail: stats.jobs > 0 ? `${stats.jobs} job(s) marcado(s) como running/ativo(s).` : 'Nenhum job apareceu como running ou ativo na consulta atual.',
+    },
+    {
+      key: 'running',
+      tone: hasRecentRunningProcess ? 'info' : 'neutral',
+      title: hasRecentRunningProcess ? 'Ha processos recentes em andamento' : 'Nenhum processo recente em andamento',
+      detail: hasRecentRunningProcess ? 'A lista de processos recentes mostra itens processando agora.' : 'Os processos recentes nao mostram status running nesta leitura.',
+    },
+    {
+      key: 'attention',
+      tone: recentStatusesNeedingAttention.length > 0 ? 'warn' : 'success',
+      title: recentStatusesNeedingAttention.length > 0 ? 'Ha itens recentes que pedem atencao' : 'Itens recentes sem alerta imediato',
+      detail: recentStatusesNeedingAttention.length > 0 ? 'Falhas ou itens na fila apareceram nas listas recentes do dashboard.' : 'As listas recentes nao mostraram falhas nem itens na fila nesta leitura.',
+    },
+  ];
+
   return (
     <div className="page-enter">
-      <SectionHeader title="Dashboard" sub="Visão geral do sistema de auditoria fiscal" />
+      <SectionHeader title="Dashboard" sub="Visao geral do sistema de auditoria fiscal" />
 
-      <div className="stat-grid">
-        <div className={cn('stat-card', stats.status === 'ok' ? 'success' : 'danger')}>
-          <div className="stat-label">API</div>
-          <div className="stat-value">{stats.status}</div>
+      <div className="stat-grid dashboard-stat-grid">
+        {statCards.map(card => {
+          const Icon = card.icon;
+          return (
+            <div key={card.key} className={cn('stat-card', card.tone, 'dashboard-stat-card')}>
+              <div className="dashboard-stat-card-top">
+                <div className={cn('dashboard-stat-icon', card.tone)}>
+                  <Icon size={18} />
+                </div>
+                <div className="dashboard-stat-detail">{card.detail}</div>
+              </div>
+              <div className="dashboard-stat-title">{card.title}</div>
+              <div className="stat-value dashboard-stat-value">{card.value}</div>
+              <div className="dashboard-stat-helper">{card.helper}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="card dashboard-system-card">
+        <div className="dashboard-system-card-head">
+          <div>
+            <div className="dashboard-system-title">
+              <span className={cn('dashboard-system-dot', apiOnline ? 'success' : 'danger')} />
+              Status do sistema
+            </div>
+            <div className="dashboard-system-sub">Resumo operacional com sinais confiaveis da leitura atual.</div>
+          </div>
+          <div className="dashboard-quick-actions">
+            <button className="btn btn-primary btn-sm dashboard-quick-action" onClick={() => navigate('execucao')}>
+              <IconPlus /> Nova execucao
+            </button>
+            <button className="btn btn-ghost btn-sm dashboard-quick-action" onClick={() => navigate('fila_trabalho')}>
+              <IconFolder /> Ver fila
+            </button>
+            <button className="btn btn-ghost btn-sm dashboard-quick-action" onClick={() => navigate('agendamentos')}>
+              <IconClock /> Ver agendamentos
+            </button>
+            <button className="btn btn-ghost btn-sm dashboard-quick-action" disabled={isRefreshing} onClick={refreshDashboard}>
+              {isRefreshing ? <Spinner size={13} /> : <IconRefresh />} Atualizar painel
+            </button>
+          </div>
         </div>
-        <div className="stat-card info">
-          <div className="stat-label">Execuções</div>
-          <div className="stat-value">{stats.execucoes}</div>
-        </div>
-        <div className="stat-card neutral">
-          <div className="stat-label">Processos</div>
-          <div className="stat-value">{stats.processos}</div>
-        </div>
-        <div className="stat-card warn">
-          <div className="stat-label">Jobs ativos</div>
-          <div className="stat-value">{stats.jobs}</div>
+        <div className="dashboard-system-signals">
+          {systemSignals.map(signal => (
+            <div key={signal.key} className="dashboard-system-signal">
+              <span className={cn('dashboard-system-signal-dot', signal.tone)} />
+              <div>
+                <div className="dashboard-system-signal-title">{signal.title}</div>
+                <div className="dashboard-system-signal-detail">{signal.detail}</div>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <div className="card">
-          <div className="card-header"><span className="card-title">Execuções recentes</span></div>
+      <div className="dashboard-table-grid">
+        <div className="card dashboard-table-card">
+          <div className="card-header dashboard-table-header">
+            <div>
+              <span className="card-title">Ultimas execucoes</span>
+              <div className="dashboard-table-subtitle">Clientes, periodo e status mais recentes.</div>
+            </div>
+          </div>
           <div className="card-body" style={{ padding: 0 }}>
             {execs.loading ? <div style={{ padding: 20 }}><Loading /></div> : (
-              <div className="table-wrap" style={{ border: 'none', borderRadius: 0 }}>
+              <div className="table-wrap dashboard-table-wrap" style={{ border: 'none', borderRadius: 0 }}>
                 <table>
                   <thead><tr>
-                    <th>Cliente</th><th>Período</th><th>Status</th><th>Criado em</th>
+                    <th>Cliente</th><th>Periodo</th><th>Status</th><th>Criado em</th>
                   </tr></thead>
                   <tbody>
-                    {(execs.data?.items || []).length === 0 ? <Empty msg="Nenhuma execução" /> :
-                      (execs.data?.items || []).map(r => (
+                    {recentExecutions.length === 0 ? <Empty msg="Nenhuma execucao" /> :
+                      recentExecutions.map(r => (
                         <tr key={r.job_id}>
-                          <td className="primary">{r.client_name}</td>
-                          <td className="mono">{r.period_start} → {r.period_end}</td>
-                          <td><StatusBadge value={r.status} /></td>
-                          <td>{fmtDate(r.created_at)}</td>
+                          <td className="primary dashboard-cell-primary">
+                            <div className="dashboard-cell-title">{r.client_name}</div>
+                            <div className="dashboard-cell-subtitle">Job {String(r.job_id || '').slice(0, 8) || '—'}</div>
+                          </td>
+                          <td className="mono">
+                            <div className="dashboard-period">{r.period_start} ate {r.period_end}</div>
+                          </td>
+                          <td><DashboardStatusBadge value={r.status} /></td>
+                          <td>
+                            <div className="dashboard-cell-title">{fmtDate(r.created_at)}</div>
+                            <div className="dashboard-cell-subtitle">Registro da execucao</div>
+                          </td>
                         </tr>
                       ))}
                   </tbody>
@@ -1376,24 +1527,35 @@ function DashboardPage({ baseUrl, toast }) {
           </div>
         </div>
 
-        <div className="card">
-          <div className="card-header"><span className="card-title">Processos recentes</span></div>
+        <div className="card dashboard-table-card">
+          <div className="card-header dashboard-table-header">
+            <div>
+              <span className="card-title">Processos recentes</span>
+              <div className="dashboard-table-subtitle">Tipo, status e volume dos processos mais recentes.</div>
+            </div>
+          </div>
           <div className="card-body" style={{ padding: 0 }}>
             {procs.loading ? <div style={{ padding: 20 }}><Loading /></div> : (
-              <div className="table-wrap" style={{ border: 'none', borderRadius: 0 }}>
+              <div className="table-wrap dashboard-table-wrap" style={{ border: 'none', borderRadius: 0 }}>
                 <table>
                   <thead><tr>
-                    <th>Alias</th><th>Tipo</th><th>Status</th><th>Notas</th>
+                    <th>Processo</th><th>Tipo</th><th>Status</th><th>Notas</th>
                   </tr></thead>
                   <tbody>
-                    {(procs.data?.items || []).length === 0 ? <Empty msg="Nenhum processo" /> :
-                      (procs.data?.items || []).map(r => (
+                    {recentProcesses.length === 0 ? <Empty msg="Nenhum processo" /> :
+                      recentProcesses.map(r => (
                         <tr key={r.id}>
-                          <td className="primary" style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                            title={clientName(r.cert_alias)}>{clientName(r.cert_alias)}</td>
+                          <td className="primary dashboard-cell-primary" style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                            title={clientName(r.cert_alias)}>
+                            <div className="dashboard-cell-title">{clientName(r.cert_alias)}</div>
+                            <div className="dashboard-cell-subtitle">ID {String(r.id || '').slice(0, 8)}</div>
+                          </td>
                           <td><Badge tone="neutral">{r.tipo_nota}</Badge></td>
-                          <td><StatusBadge value={r.status} /></td>
-                          <td className="mono">{r.total_notas}</td>
+                          <td><DashboardStatusBadge value={r.status} /></td>
+                          <td className="mono">
+                            <div className="dashboard-cell-title">{r.total_notas}</div>
+                            <div className="dashboard-cell-subtitle">Notas vinculadas</div>
+                          </td>
                         </tr>
                       ))}
                   </tbody>
@@ -4419,7 +4581,7 @@ function App() {
 
   const pageProps = { baseUrl, toast };
   const pages = {
-    dashboard:    <DashboardPage {...pageProps} />,
+    dashboard:    <DashboardPage {...pageProps} navigate={navigate} />,
     execucao:     <ExecucaoPage {...pageProps} />,
     agendamentos: <AgendamentosPage {...pageProps} />,
     fila_trabalho:<FilaDeTrabalhoPage {...pageProps} navigate={navigate} variant="a" sidebarVisible={desktopSidebarVisible} onToggleSidebar={() => setDesktopSidebarVisible(v => !v)} />,
