@@ -1551,6 +1551,14 @@ tbody td.actions { white-space: nowrap; }
   background: rgba(240, 101, 96, .05);
 }
 
+.queue-row-documental-attention {
+  background: rgba(240, 101, 96, .1);
+}
+
+.queue-row-documental-attention:hover {
+  background: rgba(240, 101, 96, .14);
+}
+
 .sla-pill {
   display: inline-flex;
   align-items: center;

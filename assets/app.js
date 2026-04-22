@@ -262,6 +262,34 @@ function queueConferenceStatus(value) {
   return hasAssignedQueueResponsible(value) ? 'Analisado' : 'Analisar';
 }
 
+function normalizeQueueDocumentStatus(value) {
+  const raw = String(value || '').toLowerCase().trim();
+  if (raw.includes('cancel')) return 'cancelada';
+  if (raw.includes('substit')) return 'substituida';
+  if (raw.includes('normal')) return 'normal';
+  return '';
+}
+
+function getQueueDocumentStatusLabel(value) {
+  const documentStatus = normalizeQueueDocumentStatus(value);
+  if (documentStatus === 'cancelada') return 'Cancelada';
+  if (documentStatus === 'substituida') return 'Substituída';
+  if (documentStatus === 'normal') return 'Normal';
+  return '\u2014';
+}
+
+function getQueueStatusNotaDisplay(item) {
+  const documentStatus = normalizeQueueDocumentStatus(item?.status_documental_pdf);
+  if (documentStatus === 'cancelada') return 'cancelada';
+  if (documentStatus === 'substituida') return 'substituida';
+  return item?.queue_status_nota;
+}
+
+function hasQueueDocumentAttention(item) {
+  const documentStatus = normalizeQueueDocumentStatus(item?.status_documental_pdf);
+  return documentStatus === 'cancelada' || documentStatus === 'substituida';
+}
+
 function queueSlaFromDate(dateValue, prioridade) {
   if (!dateValue) return { label: 'Sem prazo', tone: 'neutral', hours: null };
   const base = new Date(dateValue);
@@ -694,6 +722,7 @@ const RELATORIO_COLUNAS = [
   { header: 'Consulta Simples API',   key: 'consulta_simples_api' },
   { header: 'Status Simples Nacional',key: 'status_simples_nacional' },
   { header: 'Status nota',            key: 'status_nota' },
+  { header: 'Status nota PDF',        key: 'status_nota_pdf' },
   { header: 'Status',                 key: 'status' },
   { header: 'Prioridade',             key: 'prioridade' },
   { header: 'Responsável',            key: 'responsavel' },
@@ -727,6 +756,7 @@ function exportRelatorioCSV(rows, name) {
       consulta_simples_api: ['consulta_simples_api', 'consulta_simples'],
       status_simples_nacional: ['status_simples_nacional', 'simples_nacional'],
       status_nota:          ['status_nota', 'queue_status_nota', 'status'],
+      status_nota_pdf:      ['status_nota_pdf', 'status_documental_pdf'],
       status:               ['status', 'queue_status', 'status_fila', 'status_fila_manual'],
       prioridade:           ['prioridade', 'queue_prioridade', 'prioridade_manual'],
       responsavel:          ['responsavel', 'queue_responsavel'],
@@ -3117,6 +3147,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
       ...item,
       competencia: item.queue_competencia === '—' ? (item.competencia || '') : item.queue_competencia,
       status_nota: item.queue_status_nota || '',
+      status_nota_pdf: getQueueDocumentStatusLabel(item.status_documental_pdf),
       status: item.queue_status || '',
       prioridade: normalizeQueuePriority(item.queue_prioridade) === 'alta' ? 'Alta' : normalizeQueuePriority(item.queue_prioridade) === 'media' ? 'Media' : 'Baixa',
       responsavel: item.queue_responsavel || '',
@@ -3455,6 +3486,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                       <th>Prestador</th>
                       <th>Valor</th>
                       <th>Status nota</th>
+                      <th>Status nota PDF</th>
                       <th>Simples Nacional / XML</th>
                       <th>Consulta Simples API</th>
                       <th>Status Simples Nacional</th>
@@ -3469,43 +3501,50 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                   <tbody>
                     {!visibleItems.length ? (
                       <Empty msg="Nenhuma nota encontrada para os filtros atuais." />
-                    ) : visibleItems.map(item => (
-                      <tr
-                        key={item.id}
-                        className={item.queue_sla.tone === 'danger' ? 'queue-row-attention' : ''}
-                        onClick={() => setSelected(item)}
-                      >
-                        <td className="primary mono">{item.queue_numero_nota}</td>
-                        <td className="actions">
-                          <button
-                            className={cn('btn btn-xs', hasAssignedQueueResponsible(item.queue_responsavel) ? 'btn-primary' : 'btn-danger')}
-                            onClick={e => { e.stopPropagation(); setSelected(item); }}
-                          >
-                            {hasAssignedQueueResponsible(item.queue_responsavel) ? 'Analisado' : 'Analisar'}
-                          </button>
-                        </td>
-                        <td className="mono">{item.queue_competencia}</td>
-                        <td>{item.queue_empresa}</td>
-                        <td style={{ maxWidth: 180, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={item.queue_prestador}>
-                          {item.queue_prestador}
-                        </td>
-                        <td className="mono right">{fmtMoney(item.valor_total)}</td>
-                        <td><StatusBadge value={item.queue_status_nota} /></td>
-                        <td>{item.simples_nacional || '\u2014'}</td>
-                        <td>{item.consulta_simples_api || '\u2014'}</td>
-                        <td>{item.status_simples_nacional || '\u2014'}</td>
-                        <td><StatusBadge value={item.queue_status} /></td>
-                        <td>
-                          <Badge tone={item.queue_divergencia_final ? 'warn' : 'success'}>
-                            {item.queue_divergencia}
-                          </Badge>
-                        </td>
-                        <td><QueuePriorityBadge value={item.queue_prioridade} /></td>
-                        <td>{item.queue_responsavel}</td>
-                        <td className="mono">{fmtDate(item.queue_entrada)}</td>
-                        <td><QueueSlaBadge sla={item.queue_sla} /></td>
-                      </tr>
-                    ))}
+                    ) : visibleItems.map(item => {
+                      const notaStatusDisplay = getQueueStatusNotaDisplay(item);
+                      return (
+                        <tr
+                          key={item.id}
+                          className={cn(
+                            item.queue_sla.tone === 'danger' && 'queue-row-attention',
+                            hasQueueDocumentAttention(item) && 'queue-row-documental-attention'
+                          )}
+                          onClick={() => setSelected(item)}
+                        >
+                          <td className="primary mono">{item.queue_numero_nota}</td>
+                          <td className="actions">
+                            <button
+                              className={cn('btn btn-xs', hasAssignedQueueResponsible(item.queue_responsavel) ? 'btn-primary' : 'btn-danger')}
+                              onClick={e => { e.stopPropagation(); setSelected(item); }}
+                            >
+                              {hasAssignedQueueResponsible(item.queue_responsavel) ? 'Analisado' : 'Analisar'}
+                            </button>
+                          </td>
+                          <td className="mono">{item.queue_competencia}</td>
+                          <td>{item.queue_empresa}</td>
+                          <td style={{ maxWidth: 180, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={item.queue_prestador}>
+                            {item.queue_prestador}
+                          </td>
+                          <td className="mono right">{fmtMoney(item.valor_total)}</td>
+                          <td><StatusBadge value={notaStatusDisplay} /></td>
+                          <td>{getQueueDocumentStatusLabel(item.status_documental_pdf)}</td>
+                          <td>{item.simples_nacional || '\u2014'}</td>
+                          <td>{item.consulta_simples_api || '\u2014'}</td>
+                          <td>{item.status_simples_nacional || '\u2014'}</td>
+                          <td><StatusBadge value={item.queue_status} /></td>
+                          <td>
+                            <Badge tone={item.queue_divergencia_final ? 'warn' : 'success'}>
+                              {item.queue_divergencia}
+                            </Badge>
+                          </td>
+                          <td><QueuePriorityBadge value={item.queue_prioridade} /></td>
+                          <td>{item.queue_responsavel}</td>
+                          <td className="mono">{fmtDate(item.queue_entrada)}</td>
+                          <td><QueueSlaBadge sla={item.queue_sla} /></td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
