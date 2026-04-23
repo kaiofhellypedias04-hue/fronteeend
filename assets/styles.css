@@ -1667,8 +1667,39 @@ tbody td.actions { white-space: nowrap; }
   white-space: nowrap;
 }
 
+.queue-compare-table table {
+  table-layout: fixed;
+}
+
+.queue-compare-table thead th:first-child,
+.queue-compare-table tbody td:first-child {
+  width: 22%;
+}
+
+.queue-compare-table thead th:not(:first-child),
+.queue-compare-table tbody td:not(:first-child) {
+  text-align: right;
+}
+
+.queue-compare-table tbody td {
+  vertical-align: middle;
+}
+
+.queue-compare-table tbody tr + tr td {
+  border-top: 1px solid var(--border-soft);
+}
+
+.compare-empty {
+  color: var(--text-3);
+  font-style: italic;
+}
+
 .compare-diff-danger {
   color: var(--red);
+}
+
+.compare-diff-warn {
+  color: #c58a18;
 }
 
 .compare-diff-neutral {

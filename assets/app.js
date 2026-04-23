@@ -460,8 +460,9 @@ function getQueueCounts(data, fallback) {
 
 function buildQueueTributosComparativo(row) {
   const toNum = v => {
+    if (v === null || v === undefined || v === '') return null;
     const n = Number(v);
-    return Number.isFinite(n) ? n : 0;
+    return Number.isFinite(n) ? n : null;
   };
   const make = (label, informado, calculado) => ({
     label,
@@ -472,7 +473,7 @@ function buildQueueTributosComparativo(row) {
   return [
     make('IRRF', row.irrf, row.irrf_calculado),
     make('CSRF', row.csrf, row.csrf_calculado),
-    make('ISS', row.iss, row.iss_calculado != null ? row.iss_calculado : row.iss),
+    make('ISS', row.iss, row.iss_calculado),
   ];
 }
 
@@ -1194,6 +1195,22 @@ function QueueAnalysisContent({
   if (!selected) return null;
 
   const queueStatus = selected.status_fila_final || selected.queue_status || selected.status || 'pendente';
+  const formatCompareValue = (value, emptyLabel) => (value === null ? emptyLabel : fmtMoney(value));
+  const getCompareMeta = (item) => {
+    if (item.informado === null || item.calculado === null) {
+      return { diffLabel: 'Sem comparação', diffTone: 'neutral' };
+    }
+
+    const diff = item.calculado - item.informado;
+    if (Math.abs(diff) <= 0.009) {
+      return { diffLabel: 'Sem diferença', diffTone: 'neutral' };
+    }
+
+    return {
+      diffLabel: `${diff > 0 ? '+' : ''}${fmtMoney(diff)}`,
+      diffTone: diff > 0 ? 'danger' : 'warn',
+    };
+  };
 
   return (
     <div className="queue-detail">
@@ -1260,22 +1277,26 @@ function QueueAnalysisContent({
             <thead>
               <tr>
                 <th>Tributo</th>
-                <th title="Valor que veio na nota fiscal">Informado (NF)</th>
-                <th title="Valor calculado pelo sistema segundo a regra">Calculado (Sistema)</th>
+                <th title="Valor que veio na nota fiscal">Informado na nota</th>
+                <th title="Valor calculado pelo sistema segundo a regra">Calculado pelo sistema</th>
                 <th title="Diferença entre o valor informado e o valor calculado">Diferença</th>
               </tr>
             </thead>
             <tbody>
               {tributosComparativo.map(item => {
-                const diff = item.calculado - item.informado;
-                const tone = Math.abs(diff) > 0.009 ? 'danger' : 'neutral';
-                const diffLabel = Math.abs(diff) > 0.009 ? `${diff > 0 ? '+' : ''}${fmtMoney(diff)}` : '-';
+                const compareMeta = getCompareMeta(item);
                 return (
                   <tr key={item.label}>
                     <td className="primary">{item.label}</td>
-                    <td className="mono right">{fmtMoney(item.informado)}</td>
-                    <td className="mono right">{fmtMoney(item.calculado)}</td>
-                    <td className={`mono right compare-diff compare-diff-${tone}`}>{diffLabel}</td>
+                    <td className={cn('mono right', item.informado === null && 'compare-empty')}>
+                      {formatCompareValue(item.informado, 'Não informado')}
+                    </td>
+                    <td className={cn('mono right', item.calculado === null && 'compare-empty')}>
+                      {formatCompareValue(item.calculado, 'Não calculado')}
+                    </td>
+                    <td className={`mono right compare-diff compare-diff-${compareMeta.diffTone}`}>
+                      {compareMeta.diffLabel}
+                    </td>
                   </tr>
                 );
               })}
