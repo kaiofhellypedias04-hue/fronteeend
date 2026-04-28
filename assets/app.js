@@ -192,10 +192,6 @@ function normFilterValue(value) {
     .toLowerCase();
 }
 
-function compactFilterValue(value) {
-  return normFilterValue(value).replace(/\s+/g, '');
-}
-
 function normalizeQueuePriority(value) {
   const txt = normFilterValue(value);
   if (txt.startsWith('alt')) return 'alta';
@@ -475,123 +471,6 @@ function buildQueueTributosComparativo(row) {
     make('CSRF', row.csrf, row.csrf_calculado),
     make('ISS', row.iss, row.iss_calculado),
   ];
-}
-
-function matchQueueSmartSearch(item, query) {
-  const raw = String(query || '').trim();
-  if (!raw) return true;
-
-  const fields = {
-    nota: normFilterValue(item.queue_numero_nota),
-    chave: normFilterValue(item.chave_acesso),
-    competencia: normFilterValue(item.queue_competencia),
-    empresa: normFilterValue(item.queue_empresa),
-    prestador: normFilterValue(item.queue_prestador),
-    valor: normFilterValue(`${fmtMoney(item.valor_total)} ${item.valor_total ?? ''}`),
-    status_nota: normFilterValue(item.queue_status_nota),
-    status: normFilterValue(item.queue_status),
-    divergencia: normFilterValue(item.queue_divergencia),
-    prioridade: normFilterValue(item.queue_prioridade),
-    responsavel: normFilterValue(item.queue_responsavel),
-    entrada: normFilterValue(fmtDate(item.queue_entrada)),
-    sla: normFilterValue(item.queue_sla?.label),
-  };
-
-  const aliases = {
-    n: 'nota',
-    numero: 'nota',
-    chave: 'chave',
-    competencia: 'competencia',
-    empresa: 'empresa',
-    prestador: 'prestador',
-    valor: 'valor',
-    statusnota: 'status_nota',
-    status_nota: 'status_nota',
-    status: 'status',
-    divergencia: 'divergencia',
-    prioridade: 'prioridade',
-    responsavel: 'responsavel',
-    entrada: 'entrada',
-    sla: 'sla',
-  };
-
-  const compactFields = Object.fromEntries(
-    Object.entries(fields).map(([key, value]) => [key, compactFilterValue(value)])
-  );
-  const haystack = Object.values(fields).join(' ');
-  const compactHaystack = compactFilterValue(haystack);
-  const parts = raw.split(/\s+/).filter(Boolean);
-  const clauses = [];
-  let current = null;
-
-  const pushCurrent = () => {
-    if (!current) return;
-    const normalizedValue = normFilterValue(current.value);
-    if (normalizedValue) clauses.push({ key: current.key, value: normalizedValue });
-    current = null;
-  };
-
-  parts.forEach(part => {
-    const idx = part.indexOf(':');
-    if (idx > 0) {
-      const alias = aliases[normFilterValue(part.slice(0, idx))];
-      const value = part.slice(idx + 1);
-      if (alias) {
-        pushCurrent();
-        current = { key: alias, value };
-        return;
-      }
-    }
-
-    if (current) {
-      current.value = `${current.value} ${part}`;
-      return;
-    }
-
-    const normalizedPart = normFilterValue(part);
-    if (normalizedPart) clauses.push({ key: null, value: normalizedPart });
-  });
-
-  pushCurrent();
-
-  const matchesText = (fieldValue, compactFieldValue, value) => {
-    const normalizedValue = normFilterValue(value);
-    if (!normalizedValue) return true;
-
-    const compactValue = compactFilterValue(normalizedValue);
-    if (fieldValue.includes(normalizedValue)) return true;
-    if (compactValue.length >= 2 && compactFieldValue.includes(compactValue)) return true;
-
-    const tokens = normalizedValue.split(' ').filter(token => token.length >= 2);
-    return tokens.length > 0 && tokens.every(token => fieldValue.includes(token));
-  };
-
-  return clauses.every(({ key, value }) => {
-    if (!value) return true;
-    if (key) return matchesText(fields[key] || '', compactFields[key] || '', value);
-    return matchesText(haystack, compactHaystack, value);
-  });
-}
-
-function includesNormalizedFilter(source, query, { compact = false } = {}) {
-  const sourceValue = compact ? compactFilterValue(source) : normFilterValue(source);
-  const queryValue = compact ? compactFilterValue(query) : normFilterValue(query);
-  if (!queryValue) return true;
-  return sourceValue.includes(queryValue);
-}
-
-function matchQueueNumeroNotaFilter(noteValue, query) {
-  const rawQuery = String(query || '').trim();
-  if (!rawQuery) return true;
-
-  const compactQuery = compactFilterValue(rawQuery);
-  if (/^\d+$/.test(compactQuery)) {
-    const sourceDigits = String(noteValue || '').replace(/\D+/g, '');
-    if (sourceDigits) return sourceDigits === compactQuery;
-    return compactFilterValue(noteValue) === compactQuery;
-  }
-
-  return includesNormalizedFilter(noteValue, rawQuery);
 }
 
 async function api(baseUrl, path, opts = {}) {
@@ -969,8 +848,10 @@ function getQueueDefaultFilters() {
     responsavel: '',
     conferencia: '',
     numero_nota: '',
-    valor: '',
+    valor_min: '',
+    valor_max: '',
     prestador: '',
+    razao_social: '',
     data_tipo: 'entrada',
     data_inicio: baseDate,
     data_fim: baseDate,
@@ -2929,24 +2810,12 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     ativo: true,
   });
   const [filters, setFilters] = useState(getQueueDefaultFilters);
-  const hasClientSideFilters = !!(
-    filters.prioridade ||
-    filters.responsavel ||
-    filters.conferencia ||
-    filters.numero_nota ||
-    filters.valor ||
-    filters.prestador ||
-    smartSearch.trim()
-  );
 
   const serverFilterKey = useMemo(() => JSON.stringify({
     baseUrl,
-    status: filters.status,
-    empresa: filters.empresa,
-    data_tipo: filters.data_tipo,
-    data_inicio: filters.data_inicio,
-    data_fim: filters.data_fim,
-  }), [baseUrl, filters.status, filters.empresa, filters.data_tipo, filters.data_inicio, filters.data_fim]);
+    filters,
+    smartSearch: smartSearch.trim(),
+  }), [baseUrl, filters, smartSearch]);
   const [filaData, setFilaData] = useState({
     data: null,
     items: [],
@@ -2958,49 +2827,30 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
   });
   const rulesData = { loading: false, error: null, data: [], reload: () => {} };
 
-  const queueItems = useMemo(() => {
-    return filaData.items.map(mapQueueItem);
-  }, [filaData.items]);
-
   const filterOptions = useMemo(() => {
     return {
-      empresas: getQueueCompanyOptions(filaData.data, queueItems),
-      responsaveis: getQueueResponsibleOptions(filaData.data, queueItems),
+      empresas: getQueueCompanyOptions(filaData.data, filaData.items),
+      responsaveis: getQueueResponsibleOptions(filaData.data, filaData.items),
     };
-  }, [filaData.data, queueItems]);
+  }, [filaData.data, filaData.items]);
 
-  const filteredItems = queueItems.filter(item => {
-    if (filters.prioridade && normFilterValue(item.queue_prioridade) !== normFilterValue(filters.prioridade)) return false;
-    if (filters.responsavel && normFilterValue(item.queue_responsavel) !== normFilterValue(filters.responsavel)) return false;
-    if (filters.conferencia && queueConferenceStatus(item.queue_responsavel) !== filters.conferencia) return false;
-    if (filters.numero_nota && !matchQueueNumeroNotaFilter(item.queue_numero_nota, filters.numero_nota)) return false;
-    if (filters.valor && !includesNormalizedFilter(`${fmtMoney(item.valor_total)} ${item.valor_total ?? ''}`, filters.valor, { compact: true })) return false;
-    if (filters.prestador && !includesNormalizedFilter(item.queue_prestador, filters.prestador)) return false;
-    if (!matchQueueSmartSearch(item, smartSearch)) return false;
-    return true;
-  });
+  const visibleItems = filaData.items;
   const queueCounts = useMemo(() => {
+    const total = Number(filaData.total);
     const fallback = {
-      total: filteredItems.length,
-      alta: filteredItems.filter(item => item.queue_prioridade === 'alta').length,
-      critica: filteredItems.filter(item => item.queue_sla.tone === 'danger').length,
-      divergentes: filteredItems.filter(item => item.queue_status === 'divergente').length,
+      total: Number.isFinite(total) ? total : visibleItems.length,
+      alta: 0,
+      critica: 0,
+      divergentes: 0,
     };
     return getQueueCounts(filaData.data, fallback);
-  }, [filaData.data, filteredItems]);
+  }, [filaData.data, filaData.total, visibleItems.length]);
 
-  const visibleItems = filteredItems;
   const hasMoreQueuePages = useMemo(() => {
     const total = Number(filaData.total);
     if (Number.isFinite(total) && total > 0) return filaData.items.length < total;
     return filaData.lastPageCount === queuePageSize;
   }, [filaData.items.length, filaData.lastPageCount, filaData.total, queuePageSize]);
-  const exactNumeroNotaQuery = compactFilterValue(filters.numero_nota);
-  const shouldSearchExactNumeroNota = !!exactNumeroNotaQuery && /^\d+$/.test(exactNumeroNotaQuery);
-  const hasExactNumeroNotaLoaded = useMemo(() => {
-    if (!shouldSearchExactNumeroNota) return false;
-    return queueItems.some(item => matchQueueNumeroNotaFilter(item.queue_numero_nota, exactNumeroNotaQuery));
-  }, [queueItems, shouldSearchExactNumeroNota, exactNumeroNotaQuery]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3015,6 +2865,15 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
       if (filters.data_tipo) q.set('data_tipo', filters.data_tipo);
       if (filters.data_inicio) q.set('data_inicio', filters.data_inicio);
       if (filters.data_fim) q.set('data_fim', filters.data_fim);
+      if (filters.numero_nota) q.set('numero_documento', filters.numero_nota);
+      if (filters.prestador) q.set('prestador', filters.prestador);
+      if (filters.valor_min) q.set('valor_min', filters.valor_min);
+      if (filters.valor_max) q.set('valor_max', filters.valor_max);
+      if (filters.razao_social) q.set('razao_social', filters.razao_social);
+      if (filters.responsavel) q.set('responsavel', filters.responsavel);
+      if (filters.prioridade) q.set('prioridade_manual', filters.prioridade);
+      if (filters.conferencia) q.set('conferencia', filters.conferencia);
+      if (smartSearch.trim()) q.set('q', smartSearch.trim());
 
       setFilaData(prev => ({
         ...prev,
@@ -3031,11 +2890,17 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
         const data = await api(baseUrl, `/nfse?${q.toString()}`);
         if (cancelled) return;
 
-        const nextItems = Array.isArray(data?.items) ? data.items : [];
+        const nextItems = Array.isArray(data?.items) ? data.items.map(mapQueueItem) : [];
         setFilaData(prev => {
-          const mergedItems = page === 1
-            ? nextItems
-            : [...prev.items, ...nextItems.filter(item => !prev.items.some(existing => existing.id === item.id))];
+          let mergedItems = nextItems;
+          if (page > 1) {
+            const byId = new Map(prev.items.map(item => [item.id, item]));
+            nextItems.forEach(item => {
+              if (!byId.has(item.id)) byId.set(item.id, item);
+            });
+            mergedItems = [...byId.values()];
+          }
+          const total = Number(data?.total);
 
           return {
             data,
@@ -3043,7 +2908,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
             loading: false,
             loadingMore: false,
             error: '',
-            total: Number(data?.total) || mergedItems.length,
+            total: Number.isFinite(total) ? total : mergedItems.length,
             lastPageCount: nextItems.length,
           };
         });
@@ -3060,27 +2925,11 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
 
     loadQueuePage();
     return () => { cancelled = true; };
-  }, [baseUrl, filters.status, filters.empresa, filters.data_tipo, filters.data_inicio, filters.data_fim, page, queuePageSize, serverFilterKey, queueReloadTick]);
+  }, [baseUrl, page, queuePageSize, serverFilterKey, queueReloadTick]);
 
   useEffect(() => {
     queueLoadMorePendingRef.current = false;
   }, [serverFilterKey, filaData.loading, filaData.loadingMore]);
-
-  useEffect(() => {
-    if (!shouldSearchExactNumeroNota) return;
-    if (hasExactNumeroNotaLoaded) return;
-    if (!hasMoreQueuePages) return;
-    if (filaData.loading || filaData.loadingMore || queueLoadMorePendingRef.current) return;
-
-    queueLoadMorePendingRef.current = true;
-    setPage(prev => prev + 1);
-  }, [
-    shouldSearchExactNumeroNota,
-    hasExactNumeroNotaLoaded,
-    hasMoreQueuePages,
-    filaData.loading,
-    filaData.loadingMore,
-  ]);
 
   useEffect(() => {
     setObsInterna(selected?.observacao_interna || '');
@@ -3143,7 +2992,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
   });
 
   const exportQueueRows = useMemo(() => {
-    return filteredItems.map(item => ({
+    return visibleItems.map(item => ({
       'N° da nota': item.queue_numero_nota,
       'Competência': item.queue_competencia,
       'Empresa': item.queue_empresa,
@@ -3161,10 +3010,10 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
       'Entrada': fmtDate(item.queue_entrada),
       'SLA': item.queue_sla?.label || '—',
     }));
-  }, [filteredItems]);
+  }, [visibleItems]);
 
   const exportQueueDetailedRows = useMemo(() => {
-    return filteredItems.map(item => ({
+    return visibleItems.map(item => ({
       ...item,
       competencia: item.queue_competencia === '—' ? (item.competencia || '') : item.queue_competencia,
       status_nota: item.queue_status_nota || '',
@@ -3175,7 +3024,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
       conferencia: queueConferenceStatus(item.queue_responsavel),
       observacao_interna: item.observacao_interna || '',
     }));
-  }, [filteredItems]);
+  }, [visibleItems]);
 
   const salvarObservacao = async () => {
     if (!selected) return;
@@ -3303,7 +3152,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
             ) : null}
             <button
               className="btn btn-ghost btn-sm"
-              disabled={!filteredItems.length}
+              disabled={!visibleItems.length}
               onClick={() => {
                 console.log('[Exportar fila] click', {
                   variant: isVariantB ? 'b' : 'a',
@@ -3320,7 +3169,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
             </button>
             <button
               className="btn btn-ghost btn-sm"
-              disabled={!filteredItems.length}
+              disabled={!visibleItems.length}
               onClick={() => {
                 console.log('[Exportar detalhado] click', {
                   variant: isVariantB ? 'b' : 'a',
@@ -3441,12 +3290,20 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
             </div>
             <div className="field queue-filter-card">
               <label className="label">Valor</label>
-              <input
-                className="input"
-                value={filters.valor}
-                onChange={e => setFilter('valor', e.target.value)}
-                placeholder="Ex.: 1234,56"
-              />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <input
+                  className="input"
+                  value={filters.valor_min}
+                  onChange={e => setFilter('valor_min', e.target.value)}
+                  placeholder="Min."
+                />
+                <input
+                  className="input"
+                  value={filters.valor_max}
+                  onChange={e => setFilter('valor_max', e.target.value)}
+                  placeholder="Max."
+                />
+              </div>
             </div>
             <div className="field queue-filter-card">
               <label className="label">Nome do prestador</label>
@@ -3491,6 +3348,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
         <div className="card">
           <div className="card-header">
             <span className="card-title">Fila operacional</span>
+            <span style={{ fontSize: 12, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>Resultados: {filaData.total}</span>
           </div>
           <div className="card-body" style={{ padding: 0 }}>
             {filaData.loading ? (
