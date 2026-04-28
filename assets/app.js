@@ -226,7 +226,7 @@ function normalizeProcessStatus(value) {
   if (raw.includes('queue')) return 'queued';
   if (raw.includes('run')) return 'running';
   if (raw.includes('complete') || raw.includes('success')) return 'completed';
-  if (raw.includes('fail') || raw.includes('error')) return 'failed';
+  if (raw.includes('fail') || raw.includes('falh') || raw.includes('error')) return 'failed';
   return value || 'n/a';
 }
 
@@ -844,6 +844,7 @@ function getQueueDefaultFilters() {
   return {
     status: '',
     empresa: '',
+    tipo_nota: '',
     prioridade: '',
     responsavel: '',
     conferencia: '',
@@ -1261,12 +1262,126 @@ function DashboardStatusBadge({ value }) {
   return <Badge tone={meta.tone}>{meta.label}</Badge>;
 }
 
+function tipoNotaLabel(value) {
+  const normalized = normFilterValue(value);
+  if (normalized.startsWith('tomad')) return 'Tomada';
+  if (normalized.startsWith('prestad')) return 'Prestada';
+  return value ? String(value) : '-';
+}
+
+function DashboardTableFooter({ shown, total, loading, onOpen }) {
+  const safeShown = Math.max(0, Number(shown) || 0);
+  const safeTotal = Math.max(safeShown, Number(total) || 0);
+  return (
+    <div className="dashboard-table-footer">
+      <span>Mostrando {safeShown} de {safeTotal}</span>
+      <button className="btn btn-ghost btn-sm" onClick={onOpen} disabled={loading}>
+        {loading ? <Spinner size={13} /> : null}
+        Ver todos
+      </button>
+    </div>
+  );
+}
+
+function DashboardExecutionsTable({ items }) {
+  return (
+    <div className="table-wrap dashboard-table-wrap" style={{ border: 'none', borderRadius: 0 }}>
+      <table>
+        <thead><tr>
+          <th>Cliente</th><th>Periodo</th><th>Status</th><th>Criado em</th>
+        </tr></thead>
+        <tbody>
+          {items.length === 0 ? <Empty msg="Nenhuma execucao" /> :
+            items.map((r, i) => (
+              <tr key={r.job_id || r.id || `${r.created_at || ''}-${i}`}>
+                <td className="primary dashboard-cell-primary">
+                  <div className="dashboard-cell-title">{r.client_name || clientName(r.cert_alias)}</div>
+                  <div className="dashboard-cell-subtitle">Job {String(r.job_id || r.id || '').slice(0, 8) || '-'}</div>
+                </td>
+                <td className="mono">
+                  <div className="dashboard-period">{r.period_start || '-'} ate {r.period_end || '-'}</div>
+                </td>
+                <td><DashboardStatusBadge value={r.status} /></td>
+                <td>
+                  <div className="dashboard-cell-title">{fmtDate(r.created_at)}</div>
+                  <div className="dashboard-cell-subtitle">Registro da execucao</div>
+                </td>
+              </tr>
+            ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DashboardProcessesTable({ items, repeatLoadingId, onRepeat, showActions = false }) {
+  return (
+    <div className="table-wrap dashboard-table-wrap" style={{ border: 'none', borderRadius: 0 }}>
+      <table>
+        <thead><tr>
+          <th>Processo</th><th>Tipo</th><th>Status</th><th>Notas</th>{showActions && <th></th>}
+        </tr></thead>
+        <tbody>
+          {items.length === 0 ? <Empty msg="Nenhum processo" /> :
+            items.map(r => {
+              const status = normalizeProcessStatus(r.status);
+              const processId = String(r.id || '');
+              const isRepeating = repeatLoadingId === processId;
+              return (
+                <tr key={r.id}>
+                  <td className="primary dashboard-cell-primary" style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    title={clientName(r.cert_alias)}>
+                    <div className="dashboard-cell-title">{clientName(r.cert_alias)}</div>
+                    <div className="dashboard-cell-subtitle">ID {processId.slice(0, 8) || '-'}</div>
+                  </td>
+                  <td><Badge tone="neutral">{tipoNotaLabel(r.tipo_nota)}</Badge></td>
+                  <td><DashboardStatusBadge value={r.status} /></td>
+                  <td className="mono">
+                    <div className="dashboard-cell-title">{r.total_notas ?? 0}</div>
+                    <div className="dashboard-cell-subtitle">Notas vinculadas</div>
+                  </td>
+                  {showActions && (
+                    <td className="actions">
+                      {status === 'failed' ? (
+                        <button className="btn btn-danger btn-xs" disabled={isRepeating} onClick={() => onRepeat(r.id)}>
+                          {isRepeating ? <Spinner size={12} /> : null}
+                          Repetir
+                        </button>
+                      ) : null}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ── Page: Dashboard ──────────────────────────────────────────
 function DashboardPage({ baseUrl, toast, navigate }) {
   const health  = useAsync(() => api(baseUrl, '/health'), [baseUrl]);
-  const execs   = useAsync(() => api(baseUrl, '/execucoes?page=1&page_size=5'), [baseUrl]);
-  const procs   = useAsync(() => api(baseUrl, '/processos?page=1&page_size=5'), [baseUrl]);
+  const execs   = useAsync(() => api(baseUrl, '/execucoes?page=1&page_size=6'), [baseUrl]);
+  const procs   = useAsync(() => api(baseUrl, '/processos?page=1&page_size=6'), [baseUrl]);
   const agends  = useAsync(() => api(baseUrl, '/agendamentos'), [baseUrl]);
+  const [execModalOpen, setExecModalOpen] = useState(false);
+  const [execModalPage, setExecModalPage] = useState(1);
+  const [execModalPageSize, setExecModalPageSize] = useState(25);
+  const [procModalOpen, setProcModalOpen] = useState(false);
+  const [procModalPage, setProcModalPage] = useState(1);
+  const [procModalPageSize, setProcModalPageSize] = useState(25);
+  const [repeatLoadingId, setRepeatLoadingId] = useState('');
+  const [repeatError, setRepeatError] = useState('');
+  const [repeatSuccess, setRepeatSuccess] = useState('');
+  const fullExecs = useAsync(() => {
+    if (!execModalOpen) return Promise.resolve({ items: [], total: 0 });
+    return api(baseUrl, `/execucoes?page=${execModalPage}&page_size=${execModalPageSize}`);
+  }, [baseUrl, execModalOpen, execModalPage, execModalPageSize]);
+  const fullProcs = useAsync(() => {
+    if (!procModalOpen) return Promise.resolve({ items: [], total: 0 });
+    return api(baseUrl, `/processos?page=${procModalPage}&page_size=${procModalPageSize}`);
+  }, [baseUrl, procModalOpen, procModalPage, procModalPageSize]);
 
   const stats = useMemo(() => ({
     status:    health.data?.status || 'offline',
@@ -1292,6 +1407,41 @@ function DashboardPage({ baseUrl, toast, navigate }) {
       agends.reload(),
     ]);
   }, [health, execs, procs, agends]);
+
+  const openExecModal = () => {
+    setExecModalPage(1);
+    setExecModalOpen(true);
+  };
+
+  const openProcModal = () => {
+    setProcModalPage(1);
+    setProcModalOpen(true);
+  };
+
+  const repeatProcess = async (processId) => {
+    const id = String(processId || '');
+    if (!id) return;
+    setRepeatLoadingId(id);
+    setRepeatError('');
+    setRepeatSuccess('');
+    try {
+      await api(baseUrl, `/processos/${id}/repetir`, { method: 'POST' });
+      const message = 'Processo adicionado novamente à fila';
+      setRepeatSuccess(message);
+      toast(message, 'success');
+      window.dispatchEvent(new CustomEvent('nfse:queue-refresh'));
+      await Promise.allSettled([
+        procs.reload(),
+        procModalOpen ? fullProcs.reload() : Promise.resolve(),
+      ]);
+    } catch (e) {
+      const message = `Nao foi possivel repetir o processo${e?.message ? `: ${e.message}` : '.'}`;
+      setRepeatError(message);
+      toast(message, 'error');
+    } finally {
+      setRepeatLoadingId('');
+    }
+  };
 
   const statCards = [
     {
@@ -1419,6 +1569,9 @@ function DashboardPage({ baseUrl, toast, navigate }) {
         </div>
       </div>
 
+      {repeatSuccess ? <Alert type="success">{repeatSuccess}</Alert> : null}
+      {repeatError ? <Alert type="error">{repeatError}</Alert> : null}
+
       <div className="dashboard-table-grid">
         <div className="card dashboard-table-card">
           <div className="card-header dashboard-table-header">
@@ -1439,7 +1592,7 @@ function DashboardPage({ baseUrl, toast, navigate }) {
                       recentExecutions.map(r => (
                         <tr key={r.job_id}>
                           <td className="primary dashboard-cell-primary">
-                            <div className="dashboard-cell-title">{r.client_name}</div>
+                            <div className="dashboard-cell-title">{r.client_name || clientName(r.cert_alias)}</div>
                             <div className="dashboard-cell-subtitle">Job {String(r.job_id || '').slice(0, 8) || '—'}</div>
                           </td>
                           <td className="mono">
@@ -1456,6 +1609,14 @@ function DashboardPage({ baseUrl, toast, navigate }) {
                 </table>
               </div>
             )}
+            {!execs.loading ? (
+                <DashboardTableFooter
+                  shown={recentExecutions.length}
+                  total={execs.data?.total}
+                  loading={execModalOpen && fullExecs.loading}
+                  onOpen={openExecModal}
+                />
+            ) : null}
           </div>
         </div>
 
@@ -1471,7 +1632,7 @@ function DashboardPage({ baseUrl, toast, navigate }) {
               <div className="table-wrap dashboard-table-wrap" style={{ border: 'none', borderRadius: 0 }}>
                 <table>
                   <thead><tr>
-                    <th>Processo</th><th>Tipo</th><th>Status</th><th>Notas</th>
+                    <th>Processo</th><th>Tipo</th><th>Status</th><th>Notas</th><th></th>
                   </tr></thead>
                   <tbody>
                     {recentProcesses.length === 0 ? <Empty msg="Nenhum processo" /> :
@@ -1482,11 +1643,19 @@ function DashboardPage({ baseUrl, toast, navigate }) {
                             <div className="dashboard-cell-title">{clientName(r.cert_alias)}</div>
                             <div className="dashboard-cell-subtitle">ID {String(r.id || '').slice(0, 8)}</div>
                           </td>
-                          <td><Badge tone="neutral">{r.tipo_nota}</Badge></td>
+                          <td><Badge tone="neutral">{tipoNotaLabel(r.tipo_nota)}</Badge></td>
                           <td><DashboardStatusBadge value={r.status} /></td>
                           <td className="mono">
-                            <div className="dashboard-cell-title">{r.total_notas}</div>
+                            <div className="dashboard-cell-title">{r.total_notas ?? 0}</div>
                             <div className="dashboard-cell-subtitle">Notas vinculadas</div>
+                          </td>
+                          <td className="actions">
+                            {normalizeProcessStatus(r.status) === 'failed' ? (
+                              <button className="btn btn-danger btn-xs" disabled={repeatLoadingId === String(r.id || '')} onClick={() => repeatProcess(r.id)}>
+                                {repeatLoadingId === String(r.id || '') ? <Spinner size={12} /> : null}
+                                Repetir
+                              </button>
+                            ) : null}
                           </td>
                         </tr>
                       ))}
@@ -1494,9 +1663,60 @@ function DashboardPage({ baseUrl, toast, navigate }) {
                 </table>
               </div>
             )}
+            {!procs.loading ? (
+                <DashboardTableFooter
+                  shown={recentProcesses.length}
+                  total={procs.data?.total}
+                  loading={procModalOpen && fullProcs.loading}
+                  onOpen={openProcModal}
+                />
+            ) : null}
           </div>
         </div>
       </div>
+
+      <Modal open={execModalOpen} title="Todas as execucoes" onClose={() => setExecModalOpen(false)} xl>
+        {fullExecs.error ? <Alert type="error">{fullExecs.error}</Alert> : null}
+        {fullExecs.loading ? (
+          <div style={{ padding: 20 }}><Loading /></div>
+        ) : (
+          <>
+            <DashboardExecutionsTable items={fullExecs.data?.items || []} />
+            <Pagination
+              page={execModalPage}
+              pageSize={execModalPageSize}
+              total={fullExecs.data?.total || fullExecs.data?.items?.length || 0}
+              onPage={setExecModalPage}
+              onSize={size => { setExecModalPageSize(size); setExecModalPage(1); }}
+            />
+          </>
+        )}
+      </Modal>
+
+      <Modal open={procModalOpen} title="Todos os processos recentes" onClose={() => setProcModalOpen(false)} xl>
+        {repeatSuccess ? <Alert type="success">{repeatSuccess}</Alert> : null}
+        {repeatError ? <Alert type="error">{repeatError}</Alert> : null}
+        {fullProcs.error ? <Alert type="error">{fullProcs.error}</Alert> : null}
+        {fullProcs.loading ? (
+          <div style={{ padding: 20 }}><Loading /></div>
+        ) : (
+          <>
+            <DashboardProcessesTable
+              items={fullProcs.data?.items || []}
+              repeatLoadingId={repeatLoadingId}
+              onRepeat={repeatProcess}
+              showActions
+            />
+            <Pagination
+              page={procModalPage}
+              pageSize={procModalPageSize}
+              total={fullProcs.data?.total || fullProcs.data?.items?.length || 0}
+              onPage={setProcModalPage}
+              onSize={size => { setProcModalPageSize(size); setProcModalPage(1); }}
+            />
+          </>
+        )}
+      </Modal>
     </div>
   );
 }
@@ -2862,6 +3082,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
       });
       if (filters.status) q.set('status', filters.status);
       if (filters.empresa) q.set('cert_alias', filters.empresa);
+      if (filters.tipo_nota) q.set('tipo_nota', filters.tipo_nota);
       if (filters.data_tipo) q.set('data_tipo', filters.data_tipo);
       if (filters.data_inicio) q.set('data_inicio', filters.data_inicio);
       if (filters.data_fim) q.set('data_fim', filters.data_fim);
@@ -2949,6 +3170,12 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     setQueueReloadTick(prev => prev + 1);
   }, []);
 
+  useEffect(() => {
+    const onQueueRefresh = () => refreshQueue();
+    window.addEventListener('nfse:queue-refresh', onQueueRefresh);
+    return () => window.removeEventListener('nfse:queue-refresh', onQueueRefresh);
+  }, [refreshQueue]);
+
   const loadNextQueuePage = useCallback(() => {
     if (!hasMoreQueuePages) return;
     if (filaData.loading || filaData.loadingMore || queueLoadMorePendingRef.current) return;
@@ -2994,6 +3221,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
   const exportQueueRows = useMemo(() => {
     return visibleItems.map(item => ({
       'N° da nota': item.queue_numero_nota,
+      'Tipo nota': tipoNotaLabel(item.tipo_nota),
       'Competência': item.queue_competencia,
       'Empresa': item.queue_empresa,
       'Prestador': item.queue_prestador,
@@ -3247,6 +3475,14 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
               </select>
             </div>
             <div className="field queue-filter-card">
+              <label className="label">Tipo de nota</label>
+              <select className="select" value={filters.tipo_nota} onChange={e => setFilter('tipo_nota', e.target.value)}>
+                <option value="">Todos</option>
+                <option value="tomadas">Tomadas</option>
+                <option value="prestadas">Prestadas</option>
+              </select>
+            </div>
+            <div className="field queue-filter-card">
               <label className="label">Prioridade</label>
               <select className="select" value={filters.prioridade} onChange={e => setFilter('prioridade', e.target.value)}>
                 <option value="">Todas</option>
@@ -3360,6 +3596,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                     <tr>
                       <th>N° da nota</th>
                       <th></th>
+                      <th>Tipo</th>
                       <th>Competência</th>
                       <th>Empresa</th>
                       <th>Prestador</th>
@@ -3400,6 +3637,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
                               {hasAssignedQueueResponsible(item.queue_responsavel) ? 'Analisado' : 'Analisar'}
                             </button>
                           </td>
+                          <td><Badge tone="neutral">{tipoNotaLabel(item.tipo_nota)}</Badge></td>
                           <td className="mono">{item.queue_competencia}</td>
                           <td>{item.queue_empresa}</td>
                           <td style={{ maxWidth: 180, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={item.queue_prestador}>
