@@ -2,6 +2,19 @@
    Portal de Auditoria Fiscal NFS-e
    ───────────────────────────────────────────────────────────── */
 const { useState, useEffect, useMemo, useCallback, useRef } = React;
+const { RELATORIO_COLUNAS } = window.NFSEConstants;
+const { cn, fmtMoney, toCSV } = window.NFSEFormat;
+const { fmtDate, fmtDateShort, fmtCompetenciaFromDate, today, yesterday } = window.NFSEDate;
+const {
+  normFilterValue,
+  normalizeQueuePriority,
+  normalizeQueueStatus,
+  normalizeNotaStatus,
+  normalizeProcessStatus,
+  normalizeQueueDocumentStatus,
+  tipoNotaLabel,
+} = window.NFSEStatus;
+const { QUEUE_DATE_RANGE_ERROR } = window.NFSEQueue;
 console.info('[app.js] bundle loaded', {
   marker: 'export-runtime-debug-v1',
   loadedAt: new Date().toISOString(),
@@ -23,8 +36,6 @@ const MENU = [
 ];
 
 const API_URL_STORAGE_KEY = 'nfse_url';
-const APP_LOCALE = 'pt-BR';
-const APP_TIME_ZONE = 'America/Sao_Paulo';
 
 const RAILWAY_API_BASE_URL = 'https://backend-render-ready-production.up.railway.app';
 const DEFAULT_API_BASE_URL = normalizeBaseUrl(RAILWAY_API_BASE_URL);
@@ -123,111 +134,10 @@ function IconStop()      { return <Ico d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00
 function IconFolder()    { return <Ico d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z" />; }
 
 // ── Utilitários ──────────────────────────────────────────────
-function cn(...c) { return c.filter(Boolean).join(' '); }
-
-function fmtMoney(v) {
-  if (v === null || v === undefined || v === '') return '—';
-  const n = Number(v);
-  if (isNaN(n)) return String(v);
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-}
-
-function fmtDate(v) {
-  if (!v) return '—';
-  const d = new Date(v);
-  if (isNaN(d)) return String(v);
-  return d.toLocaleString(APP_LOCALE, { timeZone: APP_TIME_ZONE });
-}
-
-function fmtDateShort(v) {
-  if (!v) return '—';
-  const d = new Date(v);
-  if (isNaN(d)) return String(v);
-  return d.toLocaleDateString(APP_LOCALE, { timeZone: APP_TIME_ZONE });
-}
-
-function fmtCompetenciaFromDate(v) {
-  if (!v) return '—';
-  const d = new Date(v);
-  if (isNaN(d)) return '—';
-  return d.toLocaleDateString(APP_LOCALE, {
-    timeZone: APP_TIME_ZONE,
-    month: '2-digit',
-    year: 'numeric',
-  });
-}
-
-function toDateInputValue(value = new Date()) {
-  const d = value instanceof Date ? new Date(value) : new Date(value);
-  if (isNaN(d)) return '';
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-function shiftDate(value, days) {
-  const d = value instanceof Date ? new Date(value) : new Date(value);
-  if (isNaN(d)) return new Date();
-  d.setDate(d.getDate() + days);
-  return d;
-}
-
-function today() { return toDateInputValue(new Date()); }
-function yesterday() { return toDateInputValue(shiftDate(new Date(), -1)); }
-
 function clientName(alias) {
   if (!alias) return 'Cliente';
   if (alias.includes(' - ')) return alias.split(' - ').slice(1).join(' - ').trim();
   return alias;
-}
-
-function normFilterValue(value) {
-  return String(value || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9:]+/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toLowerCase();
-}
-
-function normalizeQueuePriority(value) {
-  const txt = normFilterValue(value);
-  if (txt.startsWith('alt')) return 'alta';
-  if (txt.startsWith('med')) return 'media';
-  if (txt.startsWith('baix')) return 'baixa';
-  return 'baixa';
-}
-
-function normalizeQueueStatus(value) {
-  const raw = String(value || '').toLowerCase();
-  if (raw.includes('diverg')) return 'divergente';
-  if (raw.includes('corret')) return 'correta';
-  if (raw.includes('cancel')) return 'cancelada';
-  if (raw.includes('pend')) return 'pendente';
-  if (raw.includes('substit')) return 'substituida';
-  return value || 'pendente';
-}
-
-function normalizeNotaStatus(value) {
-  const raw = String(value || '').toLowerCase();
-  if (raw.includes('substit')) return 'substituida';
-  if (raw.includes('diverg')) return 'divergente';
-  if (raw.includes('corret')) return 'correta';
-  if (raw.includes('cancel')) return 'cancelada';
-  if (raw.includes('pend')) return 'pendente';
-  return value || 'pendente';
-}
-
-function normalizeProcessStatus(value) {
-  const raw = String(value || '').toLowerCase();
-  if (raw.includes('cancel')) return 'cancelada';
-  if (raw.includes('queue')) return 'queued';
-  if (raw.includes('run')) return 'running';
-  if (raw.includes('complete') || raw.includes('success')) return 'completed';
-  if (raw.includes('fail') || raw.includes('falh') || raw.includes('error')) return 'failed';
-  return value || 'n/a';
 }
 
 function noteStatusFromRow(row) {
@@ -256,14 +166,6 @@ function hasAssignedQueueResponsible(value) {
 
 function queueConferenceStatus(value) {
   return hasAssignedQueueResponsible(value) ? 'Analisado' : 'Analisar';
-}
-
-function normalizeQueueDocumentStatus(value) {
-  const raw = String(value || '').toLowerCase().trim();
-  if (raw.includes('cancel')) return 'cancelada';
-  if (raw.includes('substit')) return 'substituida';
-  if (raw.includes('normal')) return 'normal';
-  return '';
 }
 
 function getQueueDocumentStatusLabel(value) {
@@ -555,13 +457,6 @@ async function openProcessFile(baseUrl, processId, arquivoId) {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
-function toCSV(rows) {
-  if (!rows?.length) return '';
-  const h = Object.keys(rows[0]);
-  const esc = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
-  return '\uFEFF' + [h.join(';'), ...rows.map(r => h.map(k => esc(r[k])).join(';'))].join('\n');
-}
-
 function dlCSV(rows, name) {
   const blob = new Blob([toCSV(rows)], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -569,51 +464,6 @@ function dlCSV(rows, name) {
   a.href = url; a.download = name; a.click();
   URL.revokeObjectURL(url);
 }
-
-// Exportação do relatório com cabeçalho exato no padrão da planilha de auditoria
-const RELATORIO_COLUNAS = [
-  { header: 'Competência',            key: 'competencia' },
-  { header: 'Município',              key: 'municipio' },
-  { header: 'Chave de Acesso',        key: 'chave_acesso' },
-  { header: 'Data de Emissão',        key: 'data_emissao' },
-  { header: 'CNPJ/CPF',              key: 'cnpj_cpf' },
-  { header: 'Razão Social',           key: 'razao_social' },
-  { header: 'N° Documento',           key: 'numero_documento' },
-  { header: 'Valor Total',            key: 'valor_total' },
-  { header: 'Valor B/C',              key: 'valor_base' },
-  { header: 'Status Base de Cálculo', key: 'status_base_calculo' },
-  { header: 'CSRF',                   key: 'csrf' },
-  { header: 'IRRF',                   key: 'irrf' },
-  { header: 'Percentual IRRF',        key: 'percentual_irrf' },
-  { header: 'INSS',                   key: 'inss' },
-  { header: 'ISS',                    key: 'iss' },
-  { header: 'Valor Líquido',          key: 'valor_liquido' },
-  { header: 'Valor Líquido Correto',  key: 'valor_liquido_correto' },
-  { header: 'Status Valor Líquido',   key: 'status_valor_liquido' },
-  { header: 'Campos ausentes no XML', key: 'campos_ausentes_xml' },
-  { header: 'Incidência do ISS',      key: 'incidencia_iss' },
-  { header: 'Data do pagamento',      key: 'data_pagamento' },
-  { header: 'Código de serviço',      key: 'codigo_servico' },
-  { header: 'Descrição do Serviço',   key: 'descricao_servico' },
-  { header: 'Código NBS',             key: 'codigo_nbs' },
-  { header: 'Código CNAE',            key: 'cnae' },
-  { header: 'Descrição CNAE',         key: 'descricao_cnae' },
-  { header: 'Simples Nacional / XML', key: 'simples_nacional' },
-  { header: 'Consulta Simples API',   key: 'consulta_simples_api' },
-  { header: 'Status Simples Nacional',key: 'status_simples_nacional' },
-  { header: 'Status nota',            key: 'status_nota' },
-  { header: 'Status nota PDF',        key: 'status_nota_pdf' },
-  { header: 'Status',                 key: 'status' },
-  { header: 'Prioridade',             key: 'prioridade' },
-  { header: 'Responsável',            key: 'responsavel' },
-  { header: 'Conferência',            key: 'conferencia' },
-  { header: 'Observação interna',     key: 'observacao_interna' },
-  { header: 'Status CSRF',            key: 'status_csrf' },
-  { header: 'Status IRRF',            key: 'status_irrf' },
-  { header: 'Status INSS',            key: 'status_inss' },
-  { header: 'Alertas Fiscais',        key: 'alertas_fiscais' },
-  { header: 'dia processado',         key: 'dia_processado' },
-];
 
 function exportRelatorioCSV(rows, name) {
   if (!rows?.length) return;
@@ -1260,13 +1110,6 @@ function getDashboardStatusMeta(value) {
 function DashboardStatusBadge({ value }) {
   const meta = getDashboardStatusMeta(value);
   return <Badge tone={meta.tone}>{meta.label}</Badge>;
-}
-
-function tipoNotaLabel(value) {
-  const normalized = normFilterValue(value);
-  if (normalized.startsWith('tomad')) return 'Tomada';
-  if (normalized.startsWith('prestad')) return 'Prestada';
-  return value ? String(value) : '-';
 }
 
 function DashboardTableFooter({ shown, total, loading, onOpen }) {
@@ -3036,6 +2879,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     filters,
     smartSearch: smartSearch.trim(),
   }), [baseUrl, filters, smartSearch]);
+  const [debouncedServerFilterKey, setDebouncedServerFilterKey] = useState(serverFilterKey);
   const [filaData, setFilaData] = useState({
     data: null,
     items: [],
@@ -3071,11 +2915,48 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     if (Number.isFinite(total) && total > 0) return filaData.items.length < total;
     return filaData.lastPageCount === queuePageSize;
   }, [filaData.items.length, filaData.lastPageCount, filaData.total, queuePageSize]);
+  const queueDateRangeError = filters.data_inicio && filters.data_fim && filters.data_inicio > filters.data_fim
+    ? QUEUE_DATE_RANGE_ERROR
+    : '';
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedServerFilterKey(serverFilterKey);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [serverFilterKey]);
+
+  useEffect(() => {
+    if (!queueDateRangeError) {
+      setFilaData(prev => prev.error === QUEUE_DATE_RANGE_ERROR ? { ...prev, error: '' } : prev);
+      return;
+    }
+    queueLoadMorePendingRef.current = false;
+    setFilaData(prev => ({
+      ...prev,
+      loading: false,
+      loadingMore: false,
+      error: queueDateRangeError,
+    }));
+  }, [queueDateRangeError]);
 
   useEffect(() => {
     let cancelled = false;
 
     const loadQueuePage = async () => {
+      if (debouncedServerFilterKey !== serverFilterKey) return;
+
+      if (queueDateRangeError) {
+        queueLoadMorePendingRef.current = false;
+        setFilaData(prev => ({
+          ...prev,
+          loading: false,
+          loadingMore: false,
+          error: queueDateRangeError,
+        }));
+        return;
+      }
+
       const q = new URLSearchParams({
         page: String(page),
         page_size: String(queuePageSize),
@@ -3146,7 +3027,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
 
     loadQueuePage();
     return () => { cancelled = true; };
-  }, [baseUrl, page, queuePageSize, serverFilterKey, queueReloadTick]);
+  }, [baseUrl, page, queuePageSize, debouncedServerFilterKey, queueReloadTick]);
 
   useEffect(() => {
     queueLoadMorePendingRef.current = false;
@@ -3337,6 +3218,50 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
     setReapplyingRules(false);
   };
 
+  const handleExportarDetalhado = async () => {
+    try {
+      if (queueDateRangeError) throw new Error(queueDateRangeError);
+
+      const q = new URLSearchParams();
+      if (filters.status) q.set('status', filters.status);
+      if (filters.empresa) q.set('cert_alias', filters.empresa);
+      if (filters.tipo_nota) q.set('tipo_nota', filters.tipo_nota);
+      if (filters.data_tipo) q.set('data_tipo', filters.data_tipo);
+      if (filters.data_inicio) q.set('data_inicio', filters.data_inicio);
+      if (filters.data_fim) q.set('data_fim', filters.data_fim);
+      if (filters.numero_nota) q.set('numero_documento', filters.numero_nota);
+      if (filters.prestador) q.set('prestador', filters.prestador);
+      if (filters.valor_min) q.set('valor_min', filters.valor_min);
+      if (filters.valor_max) q.set('valor_max', filters.valor_max);
+      if (filters.razao_social) q.set('razao_social', filters.razao_social);
+      if (filters.responsavel) q.set('responsavel', filters.responsavel);
+      if (filters.prioridade) q.set('prioridade_manual', filters.prioridade);
+      if (filters.conferencia) q.set('conferencia', filters.conferencia);
+      if (smartSearch.trim()) q.set('q', smartSearch.trim());
+
+      const query = q.toString();
+      const res = await fetch(`${baseUrl}/nfse/exportar-fila-detalhada${query ? `?${query}` : ''}`);
+      if (!res.ok) {
+        let message = `HTTP ${res.status}`;
+        const text = await res.text();
+        if (text) {
+          try {
+            const data = JSON.parse(text);
+            message = data?.detail || data?.message || text;
+          } catch {
+            message = text;
+          }
+        }
+        throw new Error(message);
+      }
+
+      const blob = await res.blob();
+      downloadBrowserBlob(blob, 'fila_detalhada.xlsx');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  };
+
   return (
     <div className={cn('page-enter', isVariantB && 'queue-page-b', !sidebarVisible && !filtersOpen && 'queue-page-wide')}>
       <SectionHeader
@@ -3398,17 +3323,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
             <button
               className="btn btn-ghost btn-sm"
               disabled={!visibleItems.length}
-              onClick={() => {
-                console.log('[Exportar detalhado] click', {
-                  variant: isVariantB ? 'b' : 'a',
-                  fileName: `${isVariantB ? 'fila_trabalho_b_detalhado' : 'fila_trabalho_detalhado'}_${today()}.csv`,
-                  rowsLength: exportQueueDetailedRows.length,
-                });
-                console.log('[Exportar detalhado] first row', exportQueueDetailedRows[0]);
-                console.log('[Exportar detalhado] headers', Object.keys(exportQueueDetailedRows[0] || {}));
-                console.log('[Exportar detalhado] observacao_interna first row', exportQueueDetailedRows[0]?.observacao_interna);
-                exportRelatorioCSV(exportQueueDetailedRows, `${isVariantB ? 'fila_trabalho_b_detalhado' : 'fila_trabalho_detalhado'}_${today()}.csv`);
-              }}
+              onClick={handleExportarDetalhado}
             >
               <IconDown /> Exportar detalhado
             </button>
