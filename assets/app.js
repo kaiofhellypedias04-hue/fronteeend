@@ -36,6 +36,14 @@ const MENU = [
 ];
 
 const API_URL_STORAGE_KEY = 'nfse_url';
+const GROUP_STORAGE_KEY = 'grupo_atual';
+
+// Fase 1: seleção visual de grupo, não é segurança real.
+// Segurança real será feita no backend em fase futura.
+const GROUP_OPTIONS = [
+  { key: 'canopus', label: 'Grupo Canopus', match: 'CANOPUS' },
+  { key: 'marox', label: 'Grupo Marox', match: 'MAROX' },
+];
 
 const RAILWAY_API_BASE_URL = 'https://backend-render-ready-production.up.railway.app';
 const DEFAULT_API_BASE_URL = normalizeBaseUrl(RAILWAY_API_BASE_URL);
@@ -100,6 +108,35 @@ function resolveApiBaseUrl() {
   if (!stored) return fallback;
   if (isLocalhostUrl(stored)) return fallback;
   return stored;
+}
+
+function normalizeGroupKey(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  return GROUP_OPTIONS.some(group => group.key === raw) ? raw : '';
+}
+
+function readCurrentGroup() {
+  return normalizeGroupKey(localStorage.getItem(GROUP_STORAGE_KEY));
+}
+
+function getGroupMeta(groupKey) {
+  const key = normalizeGroupKey(groupKey);
+  return GROUP_OPTIONS.find(group => group.key === key) || null;
+}
+
+function getGroupLabel(groupKey) {
+  return getGroupMeta(groupKey)?.label || '';
+}
+
+function pertenceAoGrupo(certAlias, grupo) {
+  const group = getGroupMeta(grupo);
+  if (!group) return true;
+  return String(certAlias || '').toUpperCase().includes(group.match);
+}
+
+function filterGroupAliases(items, grupo, getAlias = item => item?.alias) {
+  const list = Array.isArray(items) ? items : [];
+  return list.filter(item => pertenceAoGrupo(getAlias(item), grupo));
 }
 
 // ── Icons ────────────────────────────────────────────────────
@@ -1565,7 +1602,7 @@ function DashboardPage({ baseUrl, toast, navigate }) {
 }
 
 // ── Page: Execução ───────────────────────────────────────────
-function ExecucaoPage({ baseUrl, toast }) {
+function ExecucaoPage({ baseUrl, toast, grupoAtual }) {
   const certs = useAsync(() => api(baseUrl, '/certificados'), [baseUrl]);
   const creds = useAsync(() => api(baseUrl, '/credenciais'), [baseUrl]);
 
@@ -1603,9 +1640,10 @@ function ExecucaoPage({ baseUrl, toast }) {
   };
 
   const isCred = form.login_type === 'cpf_cnpj';
-  const lista = isCred
+  const listaCompleta = isCred
     ? (creds.data?.credenciais || [])
     : (certs.data?.certificados || []);
+  const lista = useMemo(() => filterGroupAliases(listaCompleta, grupoAtual), [listaCompleta, grupoAtual]);
 
   const toggle = alias => setForm(f => ({
     ...f,
@@ -2475,7 +2513,7 @@ function ProcessActions({ process, busy, onCancel, onDelete, compact = false }) 
   return actions.length ? <>{actions}</> : null;
 }
 
-function ProcessosPage({ baseUrl, toast }) {
+function ProcessosPage({ baseUrl, toast, grupoAtual }) {
   const [empresaSelecionada, setEmpresaSelecionada] = useState(null);
   const [busca, setBusca]                           = useState('');
   const [page, setPage]                             = useState(1);
@@ -2513,10 +2551,14 @@ function ProcessosPage({ baseUrl, toast }) {
     return Object.values(map).sort((a, b) => a.nome.localeCompare(b.nome));
   }, [allProcs.data]);
 
+  const empresasVisiveis = useMemo(() => {
+    return empresas.filter(e => pertenceAoGrupo(e.alias, grupoAtual));
+  }, [empresas, grupoAtual]);
+
   const empresasFiltradas = useMemo(() => {
     const t = busca.trim().toLowerCase();
-    return t ? empresas.filter(e => e.nome.toLowerCase().includes(t) || e.alias.toLowerCase().includes(t)) : empresas;
-  }, [empresas, busca]);
+    return t ? empresasVisiveis.filter(e => e.nome.toLowerCase().includes(t) || e.alias.toLowerCase().includes(t)) : empresasVisiveis;
+  }, [empresasVisiveis, busca]);
 
   const detalhar = async (id) => {
     setLoadingId(id);
@@ -2845,7 +2887,7 @@ function ProcessosPage({ baseUrl, toast }) {
 // Nível 1: empresas únicas com totais
 // Nível 2: ao clicar na empresa, mostra todas as notas dela
 
-function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVisible = true, onToggleSidebar = null }) {
+function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a', sidebarVisible = true, onToggleSidebar = null }) {
   const isVariantB = variant === 'b';
   const queueRulesEnabled = false;
   const queuePageSize = 100;
@@ -2893,10 +2935,10 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
 
   const filterOptions = useMemo(() => {
     return {
-      empresas: getQueueCompanyOptions(filaData.data, filaData.items),
+      empresas: getQueueCompanyOptions(filaData.data, filaData.items).filter(alias => pertenceAoGrupo(alias, grupoAtual)),
       responsaveis: getQueueResponsibleOptions(filaData.data, filaData.items),
     };
-  }, [filaData.data, filaData.items]);
+  }, [filaData.data, filaData.items, grupoAtual]);
 
   const visibleItems = filaData.items;
   const queueCounts = useMemo(() => {
@@ -3727,7 +3769,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, variant = 'a', sidebarVi
   );
 }
 
-function NFSePage({ baseUrl, toast }) {
+function NFSePage({ baseUrl, toast, grupoAtual }) {
   const [empresaSelecionada, setEmpresaSelecionada] = useState(null);
   const [busca, setBusca] = useState('');
   const [page, setPage]         = useState(1);
@@ -3763,10 +3805,14 @@ function NFSePage({ baseUrl, toast }) {
     return Object.values(map).sort((a, b) => a.nome.localeCompare(b.nome));
   }, [allNfse.data]);
 
+  const empresasVisiveis = useMemo(() => {
+    return empresas.filter(e => pertenceAoGrupo(e.alias, grupoAtual));
+  }, [empresas, grupoAtual]);
+
   const empresasFiltradas = useMemo(() => {
     const t = busca.trim().toLowerCase();
-    return t ? empresas.filter(e => e.nome.toLowerCase().includes(t) || e.alias.toLowerCase().includes(t)) : empresas;
-  }, [empresas, busca]);
+    return t ? empresasVisiveis.filter(e => e.nome.toLowerCase().includes(t) || e.alias.toLowerCase().includes(t)) : empresasVisiveis;
+  }, [empresasVisiveis, busca]);
 
   const emp = empresaSelecionada ? empresas.find(e => e.alias === empresaSelecionada) : null;
   const sf = (k, v) => { setPage(1); setFilters(f => ({ ...f, [k]: v })); };
@@ -4124,7 +4170,7 @@ function RelatorioPage({ baseUrl, toast }) {
 }
 
 // ── Page: Certificados ───────────────────────────────────────
-function CertificadosPage({ baseUrl, toast }) {
+function CertificadosPage({ baseUrl, toast, grupoAtual }) {
   const list = useAsync(() => api(baseUrl, '/certificados'), [baseUrl]);
   const [modal, setModal] = useState(null); // null | 'new' | 'edit' | 'pass'
   const [current, setCurrent] = useState(null);
@@ -4133,6 +4179,10 @@ function CertificadosPage({ baseUrl, toast }) {
   const [passForm, setPassForm] = useState({ password: '', confirm: '' });
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
+  const certificadosVisiveis = useMemo(
+    () => filterGroupAliases(list.data?.certificados || [], grupoAtual),
+    [list.data?.certificados, grupoAtual]
+  );
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
 
@@ -4217,8 +4267,8 @@ function CertificadosPage({ baseUrl, toast }) {
                   <th>Empresa</th><th>Alias</th><th>Arquivo</th><th>Status</th><th></th>
                 </tr></thead>
                 <tbody>
-                  {(list.data?.certificados || []).length === 0 ? <Empty msg="Nenhum certificado cadastrado" /> :
-                    (list.data?.certificados || []).map(r => (
+                  {certificadosVisiveis.length === 0 ? <Empty msg="Nenhum certificado cadastrado" /> :
+                    certificadosVisiveis.map(r => (
                       <tr key={r.alias}>
                         <td className="primary">{clientName(r.alias)}</td>
                         <td className="mono">{r.alias}</td>
@@ -4323,7 +4373,7 @@ function CertificadosPage({ baseUrl, toast }) {
 }
 
 // ── Page: Credenciais ────────────────────────────────────────
-function CredenciaisPage({ baseUrl, toast }) {
+function CredenciaisPage({ baseUrl, toast, grupoAtual }) {
   const list = useAsync(() => api(baseUrl, '/credenciais'), [baseUrl]);
   const [modal, setModal] = useState(null);
   const [current, setCurrent] = useState(null);
@@ -4331,6 +4381,10 @@ function CredenciaisPage({ baseUrl, toast }) {
   const [form, setForm] = useState({ alias: '', cpf_cnpj: '', password: '' });
   const [passForm, setPassForm] = useState({ password: '', confirm: '' });
   const [saving, setSaving] = useState(false);
+  const credenciaisVisiveis = useMemo(
+    () => filterGroupAliases(list.data?.credenciais || [], grupoAtual),
+    [list.data?.credenciais, grupoAtual]
+  );
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
 
@@ -4383,8 +4437,8 @@ function CredenciaisPage({ baseUrl, toast }) {
                   <th>Empresa</th><th>Alias</th><th>Documento</th><th>Status</th><th>Senha</th><th></th>
                 </tr></thead>
                 <tbody>
-                  {(list.data?.credenciais || []).length === 0 ? <Empty msg="Nenhuma credencial cadastrada" /> :
-                    (list.data?.credenciais || []).map(r => (
+                  {credenciaisVisiveis.length === 0 ? <Empty msg="Nenhuma credencial cadastrada" /> :
+                    credenciaisVisiveis.map(r => (
                       <tr key={r.alias}>
                         <td className="primary">{clientName(r.alias)}</td>
                         <td className="mono">{r.alias}</td>
@@ -4567,13 +4621,77 @@ function ConfiguracoesPage({ baseUrl, setBaseUrl, toast }) {
 }
 
 // ── App Shell ────────────────────────────────────────────────
+function GroupSelectionScreen({ onSelect }) {
+  return (
+    <div style={{
+      minHeight: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 24,
+      background: 'var(--bg)',
+    }}>
+      <div className="card" style={{ width: '100%', maxWidth: 560 }}>
+        <div className="card-header">
+          <span className="card-title">Selecione seu grupo</span>
+        </div>
+        <div className="card-body">
+          <div style={{ display: 'grid', gap: 12 }}>
+            {GROUP_OPTIONS.map(group => (
+              <button
+                key={group.key}
+                className="btn btn-ghost"
+                onClick={() => onSelect(group.key)}
+                style={{
+                  justifyContent: 'space-between',
+                  padding: '18px 20px',
+                  fontSize: 15,
+                  border: '1px solid var(--border)',
+                  background: 'var(--surface-2)',
+                }}
+              >
+                <span>{group.label}</span>
+                <span style={{ color: 'var(--accent)' }}>Entrar</span>
+              </button>
+            ))}
+          </div>
+          <div style={{ marginTop: 16, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
+            Fase 1: seleção visual de grupo, não é segurança real. Segurança real será feita no backend em fase futura.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [active, setActive] = useState('dashboard');
+  const [grupoAtual, setGrupoAtual] = useState(readCurrentGroup);
   const [baseUrl, setBaseUrl] = useState(resolveApiBaseUrl);
   const [apiStatus, setApiStatus] = useState('idle');
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopSidebarVisible, setDesktopSidebarVisible] = useState(true);
   const { toasts, toast } = useToast();
+
+  const selecionarGrupo = groupKey => {
+    const next = normalizeGroupKey(groupKey);
+    if (!next) return;
+    localStorage.setItem(GROUP_STORAGE_KEY, next);
+    setActive('dashboard');
+    setMobileOpen(false);
+    setDesktopSidebarVisible(true);
+    setApiStatus('idle');
+    setGrupoAtual(next);
+  };
+
+  const trocarGrupo = () => {
+    localStorage.removeItem(GROUP_STORAGE_KEY);
+    setActive('dashboard');
+    setMobileOpen(false);
+    setDesktopSidebarVisible(true);
+    setApiStatus('idle');
+    setGrupoAtual('');
+  };
 
   useEffect(() => {
     const cleaned = normalizeBaseUrl(baseUrl);
@@ -4589,6 +4707,10 @@ function App() {
   }, [baseUrl]);
 
   useEffect(() => {
+    if (!grupoAtual) {
+      setApiStatus('idle');
+      return;
+    }
     if (!baseUrl) {
       setApiStatus('err');
       return;
@@ -4600,13 +4722,22 @@ function App() {
     check();
     const iv = setInterval(check, 30000);
     return () => clearInterval(iv);
-  }, [baseUrl]);
+  }, [baseUrl, grupoAtual]);
 
   useEffect(() => {
     if (active !== 'fila_trabalho' && active !== 'fila_trabalho_b') {
       setDesktopSidebarVisible(true);
     }
   }, [active]);
+
+  if (!grupoAtual) {
+    return (
+      <>
+        <GroupSelectionScreen onSelect={selecionarGrupo} />
+        <ToastContainer toasts={toasts} />
+      </>
+    );
+  }
 
   const navigate = k => { setActive(k); setMobileOpen(false); };
   const isQueuePageActive = active === 'fila_trabalho' || active === 'fila_trabalho_b';
@@ -4642,6 +4773,12 @@ function App() {
       ))}
 
       <div className="sidebar-footer">
+        <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{getGroupLabel(grupoAtual)}</div>
+          <button className="btn btn-ghost btn-sm" onClick={trocarGrupo} style={{ justifyContent: 'center' }}>
+            Trocar grupo
+          </button>
+        </div>
         <div className="api-status">
           <div className={cn('status-dot', apiStatus)} />
           <span>{!baseUrl ? 'API não configurada' : apiStatus === 'ok' ? 'API conectada' : apiStatus === 'err' ? 'API offline' : 'Verificando...'}</span>
@@ -4650,7 +4787,7 @@ function App() {
     </>
   );
 
-  const pageProps = { baseUrl, toast };
+  const pageProps = { baseUrl, toast, grupoAtual };
   const pages = {
     dashboard:    <DashboardPage {...pageProps} navigate={navigate} />,
     execucao:     <ExecucaoPage {...pageProps} />,
@@ -4707,6 +4844,9 @@ function App() {
           <span className="topbar-sep">/</span>
           <span className="topbar-sub">Portal de Auditoria Fiscal</span>
           <div className="topbar-actions">
+            <button className="btn btn-ghost btn-sm" onClick={trocarGrupo}>
+              Trocar grupo
+            </button>
             <div className="api-status" style={{ background: 'transparent', border: 'none', padding: '4px 8px' }}>
               <div className={cn('status-dot', apiStatus)} />
               <span style={{ fontSize: 11 }}>{baseUrl}</span>
