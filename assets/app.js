@@ -139,6 +139,18 @@ function filterGroupAliases(items, grupo, getAlias = item => item?.alias) {
   return list.filter(item => pertenceAoGrupo(getAlias(item), grupo));
 }
 
+function dashboardItemPertenceAoGrupo(item, grupo) {
+  if (!getGroupMeta(grupo)) return true;
+  // Fase 1: filtro visual por grupo; segurança real será feita no backend.
+  return [item?.cert_alias, item?.client_name, item?.empresa, item?.nome, item?.alias]
+    .some(value => String(value || '').trim() && pertenceAoGrupo(value, grupo));
+}
+
+function filterDashboardGroupItems(items, grupo) {
+  const list = Array.isArray(items) ? items : [];
+  return list.filter(item => dashboardItemPertenceAoGrupo(item, grupo));
+}
+
 // ── Icons ────────────────────────────────────────────────────
 function Ico({ d, size = 16, stroke = 'currentColor', fill = 'none' }) {
   return (
@@ -656,14 +668,14 @@ function Confirm({ open, title, msg, onOk, onCancel, danger, okLabel = 'Confirma
   );
 }
 
-function Pagination({ page, pageSize, total, onPage, onSize }) {
+function Pagination({ page, pageSize, total, onPage, onSize, infoLabel = '', pageLabel = '' }) {
   const safeTotal = Math.max(0, Number(total) || 0);
   const totalPages = Math.max(1, Math.ceil(safeTotal / pageSize));
   const from = safeTotal === 0 ? 0 : ((page - 1) * pageSize) + 1;
   const to = safeTotal === 0 ? 0 : Math.min(page * pageSize, safeTotal);
   return (
     <div className="pagination">
-      <span className="pagination-info">{from}–{to} de {safeTotal}</span>
+      <span className="pagination-info">{infoLabel || `${from}–${to} de ${safeTotal}`}</span>
       <div className="pagination-controls">
         {onSize && (
           <select className="select" style={{ width: 'auto', padding: '5px 28px 5px 10px', fontSize: 12 }}
@@ -672,7 +684,7 @@ function Pagination({ page, pageSize, total, onPage, onSize }) {
           </select>
         )}
         <button className="btn btn-ghost btn-sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>←</button>
-        <span style={{ fontSize: 12, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{page}/{totalPages}</span>
+        <span style={{ fontSize: 12, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{pageLabel || `${page}/${totalPages}`}</span>
         <button className="btn btn-ghost btn-sm" disabled={page >= totalPages} onClick={() => onPage(page + 1)}>→</button>
       </div>
     </div>
@@ -1240,7 +1252,7 @@ function DashboardProcessesTable({ items, repeatLoadingId, onRepeat, showActions
 }
 
 // ── Page: Dashboard ──────────────────────────────────────────
-function DashboardPage({ baseUrl, toast, navigate }) {
+function DashboardPage({ baseUrl, toast, navigate, grupoAtual }) {
   const health  = useAsync(() => api(baseUrl, '/health'), [baseUrl]);
   const execs   = useAsync(() => api(baseUrl, '/execucoes?page=1&page_size=6'), [baseUrl]);
   const procs   = useAsync(() => api(baseUrl, '/processos?page=1&page_size=6'), [baseUrl]);
@@ -1263,21 +1275,48 @@ function DashboardPage({ baseUrl, toast, navigate }) {
     return api(baseUrl, `/processos?page=${procModalPage}&page_size=${procModalPageSize}`);
   }, [baseUrl, procModalOpen, procModalPage, procModalPageSize]);
 
+  const groupFilterActive = !!getGroupMeta(grupoAtual);
+  const recentExecutions = useMemo(
+    () => filterDashboardGroupItems(execs.data?.items, grupoAtual),
+    [execs.data?.items, grupoAtual]
+  );
+  const recentProcesses = useMemo(
+    () => filterDashboardGroupItems(procs.data?.items, grupoAtual),
+    [procs.data?.items, grupoAtual]
+  );
+  const fullExecItems = useMemo(
+    () => filterDashboardGroupItems(fullExecs.data?.items, grupoAtual),
+    [fullExecs.data?.items, grupoAtual]
+  );
+  const fullProcItems = useMemo(
+    () => filterDashboardGroupItems(fullProcs.data?.items, grupoAtual),
+    [fullProcs.data?.items, grupoAtual]
+  );
+
   const stats = useMemo(() => ({
     status:    health.data?.status || 'offline',
-    execucoes: execs.data?.total || 0,
-    processos: procs.data?.total || 0,
+    execucoes: groupFilterActive ? recentExecutions.length : execs.data?.total || 0,
+    processos: groupFilterActive ? recentProcesses.length : procs.data?.total || 0,
     jobs:      agends.data?.jobs?.filter(j => j.running || j.ativo)?.length || 0,
-  }), [health.data, execs.data, procs.data, agends.data]);
+  }), [health.data, execs.data?.total, procs.data?.total, agends.data, groupFilterActive, recentExecutions.length, recentProcesses.length]);
 
   const isRefreshing = health.loading || execs.loading || procs.loading || agends.loading;
   const apiOnline = stats.status === 'ok';
-  const recentExecutions = execs.data?.items || [];
-  const recentProcesses = procs.data?.items || [];
+  const recentExecutionsTotal = groupFilterActive ? recentExecutions.length : execs.data?.total;
+  const recentProcessesTotal = groupFilterActive ? recentProcesses.length : procs.data?.total;
   const recentStatusesNeedingAttention = [...recentExecutions, ...recentProcesses]
     .map(item => normalizeProcessStatus(item?.status))
     .filter(status => status === 'failed' || status === 'queued');
   const hasRecentRunningProcess = recentProcesses.some(item => normalizeProcessStatus(item?.status) === 'running');
+
+  useEffect(() => {
+    setExecModalOpen(false);
+    setProcModalOpen(false);
+    setExecModalPage(1);
+    setProcModalPage(1);
+    setRepeatError('');
+    setRepeatSuccess('');
+  }, [grupoAtual]);
 
   const refreshDashboard = useCallback(async () => {
     await Promise.allSettled([
@@ -1339,8 +1378,8 @@ function DashboardPage({ baseUrl, toast, navigate }) {
       icon: IconPlay,
       title: 'Execucoes',
       value: stats.execucoes,
-      detail: 'Total de execucoes registradas',
-      helper: 'Contagem geral retornada pela API',
+      detail: groupFilterActive ? 'Execucoes visiveis no painel' : 'Total de execucoes registradas',
+      helper: groupFilterActive ? 'Filtro visual pelo grupo selecionado' : 'Contagem geral retornada pela API',
     },
     {
       key: 'processos',
@@ -1348,8 +1387,8 @@ function DashboardPage({ baseUrl, toast, navigate }) {
       icon: IconProcess,
       title: 'Processos',
       value: stats.processos,
-      detail: 'Total de processos registrados',
-      helper: 'Contagem geral retornada pela API',
+      detail: groupFilterActive ? 'Processos visiveis no painel' : 'Total de processos registrados',
+      helper: groupFilterActive ? 'Filtro visual pelo grupo selecionado' : 'Contagem geral retornada pela API',
     },
     {
       key: 'jobs',
@@ -1492,7 +1531,7 @@ function DashboardPage({ baseUrl, toast, navigate }) {
             {!execs.loading ? (
                 <DashboardTableFooter
                   shown={recentExecutions.length}
-                  total={execs.data?.total}
+                  total={recentExecutionsTotal}
                   loading={execModalOpen && fullExecs.loading}
                   onOpen={openExecModal}
                 />
@@ -1546,7 +1585,7 @@ function DashboardPage({ baseUrl, toast, navigate }) {
             {!procs.loading ? (
                 <DashboardTableFooter
                   shown={recentProcesses.length}
-                  total={procs.data?.total}
+                  total={recentProcessesTotal}
                   loading={procModalOpen && fullProcs.loading}
                   onOpen={openProcModal}
                 />
@@ -1561,11 +1600,13 @@ function DashboardPage({ baseUrl, toast, navigate }) {
           <div style={{ padding: 20 }}><Loading /></div>
         ) : (
           <>
-            <DashboardExecutionsTable items={fullExecs.data?.items || []} />
+            <DashboardExecutionsTable items={fullExecItems} />
             <Pagination
               page={execModalPage}
               pageSize={execModalPageSize}
               total={fullExecs.data?.total || fullExecs.data?.items?.length || 0}
+              infoLabel={groupFilterActive ? `Mostrando ${fullExecItems.length} de ${fullExecItems.length}` : ''}
+              pageLabel={groupFilterActive ? String(execModalPage) : ''}
               onPage={setExecModalPage}
               onSize={size => { setExecModalPageSize(size); setExecModalPage(1); }}
             />
@@ -1582,7 +1623,7 @@ function DashboardPage({ baseUrl, toast, navigate }) {
         ) : (
           <>
             <DashboardProcessesTable
-              items={fullProcs.data?.items || []}
+              items={fullProcItems}
               repeatLoadingId={repeatLoadingId}
               onRepeat={repeatProcess}
               showActions
@@ -1591,6 +1632,8 @@ function DashboardPage({ baseUrl, toast, navigate }) {
               page={procModalPage}
               pageSize={procModalPageSize}
               total={fullProcs.data?.total || fullProcs.data?.items?.length || 0}
+              infoLabel={groupFilterActive ? `Mostrando ${fullProcItems.length} de ${fullProcItems.length}` : ''}
+              pageLabel={groupFilterActive ? String(procModalPage) : ''}
               onPage={setProcModalPage}
               onSize={size => { setProcModalPageSize(size); setProcModalPage(1); }}
             />
