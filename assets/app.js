@@ -45,7 +45,7 @@ const GROUP_OPTIONS = [
   { key: 'marox', label: 'Grupo Marox', match: 'MAROX' },
 ];
 
-const RAILWAY_API_BASE_URL = 'https://backend-render-ready-production.up.railway.app';
+const RAILWAY_API_BASE_URL = 'https://web-production-62f13.up.railway.app';
 const DEFAULT_API_BASE_URL = normalizeBaseUrl(RAILWAY_API_BASE_URL);
 
 const DEFAULT_API_URL = resolveDefaultApiUrl();
