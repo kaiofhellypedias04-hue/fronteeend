@@ -376,6 +376,43 @@ function getQueueResponsibleOptions(data, queueItems = []) {
   return [...new Set(names)].sort((a, b) => String(a).localeCompare(String(b)));
 }
 
+function toQueueTextOption(entry) {
+  if (!entry) return '';
+  if (typeof entry === 'string') return entry.trim();
+  if (typeof entry !== 'object') return '';
+  return String(firstDefinedValue(
+    entry.incidencia_iss,
+    entry.incidencia,
+    entry.incidencia_do_iss,
+    entry.label,
+    entry.nome,
+    entry.name,
+    entry.value
+  ) || '').trim();
+}
+
+function getQueueIssIncidenceOptions(data) {
+  const sources = [
+    data?.filter_options?.incidencias_iss,
+    data?.filter_options?.incidencia_iss,
+    data?.filter_options?.incidencia_do_iss,
+    data?.filters?.incidencias_iss,
+    data?.filters?.incidencia_iss,
+    data?.filters?.incidencia_do_iss,
+    data?.meta?.incidencias_iss,
+    data?.meta?.incidencia_iss,
+    data?.meta?.incidencia_do_iss,
+    data?.incidencias_iss,
+    data?.incidencias_iss_disponiveis,
+    data?.incidencias_disponiveis,
+  ];
+  const source = sources.find(value => Array.isArray(value));
+  const incidencias = asQueueMetaArray(source)
+    .map(toQueueTextOption)
+    .filter(Boolean);
+  return [...new Set(incidencias)].sort((a, b) => String(a).localeCompare(String(b)));
+}
+
 function getQueueCounts(data, fallback) {
   const source = firstDefinedValue(
     data?.contadores,
@@ -738,6 +775,67 @@ function FilterBar({ children, label = 'Filtros', defaultOpen = true, onToggle =
   );
 }
 
+function QueueMultiSelectFilter({ options = [], selected = [], onChange }) {
+  const [search, setSearch] = useState('');
+  const selectedValues = Array.isArray(selected) ? selected : [];
+  const selectedSet = new Set(selectedValues);
+  const visibleOptions = useMemo(() => {
+    const term = normFilterValue(search);
+    if (!term) return options;
+    return options.filter(option => normFilterValue(option).includes(term));
+  }, [options, search]);
+  const summary = selectedValues.length === 0
+    ? 'Todas'
+    : selectedValues.length === 1
+      ? selectedValues[0]
+      : `${selectedValues.length} selecionadas`;
+
+  const toggleValue = value => {
+    onChange(selectedSet.has(value)
+      ? selectedValues.filter(item => item !== value)
+      : [...selectedValues, value]);
+  };
+
+  return (
+    <div className="queue-multiselect">
+      <details>
+        <summary className="queue-multiselect-summary" title={summary}>
+          <span>{summary}</span>
+          <span aria-hidden="true">▼</span>
+        </summary>
+        <div className="queue-multiselect-panel">
+          <input
+            className="input"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Pesquisar incidência"
+          />
+          <div className="queue-multiselect-actions">
+            <button type="button" className="btn btn-ghost btn-xs" disabled={!options.length} onClick={() => onChange([...options])}>
+              Selecionar todos
+            </button>
+            <button type="button" className="btn btn-ghost btn-xs" disabled={!selectedValues.length} onClick={() => onChange([])}>
+              Limpar todos
+            </button>
+          </div>
+          <div className="queue-multiselect-list">
+            {!options.length ? (
+              <div className="queue-multiselect-empty">Nenhuma incidência disponível</div>
+            ) : !visibleOptions.length ? (
+              <div className="queue-multiselect-empty">Nenhuma incidência encontrada</div>
+            ) : visibleOptions.map(option => (
+              <label key={option} className="queue-multiselect-option">
+                <input type="checkbox" checked={selectedSet.has(option)} onChange={() => toggleValue(option)} />
+                <span title={option}>{option}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 function getQueueDefaultFilters() {
   const baseDate = yesterday();
   return {
@@ -747,6 +845,7 @@ function getQueueDefaultFilters() {
     prioridade: '',
     responsavel: '',
     conferencia: '',
+    incidencias_iss: [],
     numero_nota: '',
     valor_min: '',
     valor_max: '',
@@ -756,6 +855,12 @@ function getQueueDefaultFilters() {
     data_inicio: baseDate,
     data_fim: baseDate,
   };
+}
+
+function getQueueIssIncidenceValue(item) {
+  const value = firstDefinedValue(item?.incidencia_iss, item?.incidencia, item?.incidencia_do_iss);
+  const text = String(value ?? '').trim();
+  return text || '—';
 }
 
 function resolveDocumentUrl(baseUrl, value) {
@@ -2980,6 +3085,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
     return {
       empresas: getQueueCompanyOptions(filaData.data, filaData.items).filter(alias => pertenceAoGrupo(alias, grupoAtual)),
       responsaveis: getQueueResponsibleOptions(filaData.data, filaData.items),
+      incidencias_iss: getQueueIssIncidenceOptions(filaData.data),
     };
   }, [filaData.data, filaData.items, grupoAtual]);
 
@@ -3060,6 +3166,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
       if (filters.responsavel) q.set('responsavel', filters.responsavel);
       if (filters.prioridade) q.set('prioridade_manual', filters.prioridade);
       if (filters.conferencia) q.set('conferencia', filters.conferencia);
+      (filters.incidencias_iss || []).forEach(value => q.append('incidencia_iss', value));
       if (smartSearch.trim()) q.set('q', smartSearch.trim());
 
       setFilaData(prev => ({
@@ -3196,6 +3303,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
       'Simples Nacional / XML': item.simples_nacional || '\u2014',
       'Consulta Simples API': item.consulta_simples_api || '\u2014',
       'Status Simples Nacional': item.status_simples_nacional || '\u2014',
+      'Incidência do ISS': getQueueIssIncidenceValue(item),
       'Status': item.queue_status,
       'Divergência': item.queue_divergencia,
       'Prioridade': normalizeQueuePriority(item.queue_prioridade) === 'alta' ? 'Alta' : normalizeQueuePriority(item.queue_prioridade) === 'media' ? 'Média' : 'Baixa',
@@ -3322,6 +3430,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
       if (filters.responsavel) q.set('responsavel', filters.responsavel);
       if (filters.prioridade) q.set('prioridade_manual', filters.prioridade);
       if (filters.conferencia) q.set('conferencia', filters.conferencia);
+      (filters.incidencias_iss || []).forEach(value => q.append('incidencia_iss', value));
       if (smartSearch.trim()) q.set('q', smartSearch.trim());
 
       const query = q.toString();
@@ -3509,6 +3618,14 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
               </select>
             </div>
             <div className="field queue-filter-card">
+              <label className="label">Incidência do ISS</label>
+              <QueueMultiSelectFilter
+                options={filterOptions.incidencias_iss}
+                selected={filters.incidencias_iss}
+                onChange={values => setFilter('incidencias_iss', values)}
+              />
+            </div>
+            <div className="field queue-filter-card">
               <label className="label">Filtrar por</label>
               <select className="select" value={filters.data_tipo} onChange={e => setFilter('data_tipo', e.target.value)}>
                 <option value="entrada">Entrada</option>
@@ -3606,6 +3723,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
                       <th>Simples Nacional / XML</th>
                       <th>Consulta Simples API</th>
                       <th>Status Simples Nacional</th>
+                      <th>Incidência do ISS</th>
                       <th>Status</th>
                       <th>Divergência</th>
                       <th>Prioridade</th>
@@ -3619,6 +3737,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
                       <Empty msg="Nenhuma nota encontrada para os filtros atuais." />
                     ) : visibleItems.map(item => {
                       const notaStatusDisplay = getQueueStatusNotaDisplay(item);
+                      const incidenciaIss = getQueueIssIncidenceValue(item);
                       return (
                         <tr
                           key={item.id}
@@ -3649,6 +3768,11 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
                           <td>{item.simples_nacional || '\u2014'}</td>
                           <td>{item.consulta_simples_api || '\u2014'}</td>
                           <td>{item.status_simples_nacional || '\u2014'}</td>
+                          <td>
+                            <span className="queue-incidence-cell" title={incidenciaIss}>
+                              {incidenciaIss}
+                            </span>
+                          </td>
                           <td><StatusBadge value={item.queue_status} /></td>
                           <td>
                             <Badge tone={item.queue_divergencia_final ? 'warn' : 'success'}>

@@ -1498,6 +1498,100 @@ tbody td.actions { white-space: nowrap; }
   text-align: center;
 }
 
+.queue-multiselect {
+  position: relative;
+}
+
+.queue-multiselect summary {
+  list-style: none;
+}
+
+.queue-multiselect summary::-webkit-details-marker {
+  display: none;
+}
+
+.queue-multiselect-summary {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.queue-multiselect-summary span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-multiselect-panel {
+  margin-top: 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 10px;
+  box-shadow: var(--shadow);
+}
+
+.queue-multiselect-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.queue-multiselect-list {
+  max-height: 190px;
+  overflow-y: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+}
+
+.queue-multiselect-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.queue-multiselect-option:last-child {
+  border-bottom: none;
+}
+
+.queue-multiselect-option:hover {
+  background: var(--surface-2);
+}
+
+.queue-multiselect-option input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.queue-multiselect-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-multiselect-empty {
+  padding: 14px 10px;
+  color: var(--text-3);
+  font-size: 12px;
+  text-align: center;
+}
+
 @media (max-width: 980px) {
   .queue-filters-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1549,6 +1643,14 @@ tbody td.actions { white-space: nowrap; }
 
 .queue-table table td,
 .queue-table table th {
+  white-space: nowrap;
+}
+
+.queue-incidence-cell {
+  display: block;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
