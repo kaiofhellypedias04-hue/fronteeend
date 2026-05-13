@@ -68,6 +68,7 @@ const GROUP_OPTIONS = [
 ];
 
 const RAILWAY_API_BASE_URL = 'https://web-production-62f13.up.railway.app';
+const DEV_API_PROXY_BASE_URL = '/api';
 const DEFAULT_API_BASE_URL = normalizeBaseUrl(RAILWAY_API_BASE_URL);
 
 const DEFAULT_API_URL = resolveDefaultApiUrl();
@@ -79,6 +80,7 @@ function readViteApiBaseUrl() {
 function resolveDefaultApiUrl() {
   const viteUrl = normalizeBaseUrl(readViteApiBaseUrl());
   if (viteUrl) return viteUrl;
+  if (IS_DEV) return DEV_API_PROXY_BASE_URL;
   return normalizeBaseUrl(window.__APP_CONFIG__?.API_BASE_URL || '');
 }
 
@@ -86,6 +88,7 @@ function resolveDefaultApiUrl() {
 function normalizeBaseUrl(url) {
   const raw = String(url || '').trim();
   if (!raw) return '';
+  if (raw.startsWith('/')) return raw.replace(/\/+$/, '') || '';
   try {
     const u = new URL(raw);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
@@ -116,7 +119,9 @@ function isHttpUrl(url) {
 
 function isAllowedApiBaseUrl(url) {
   const normalized = normalizeBaseUrl(url);
-  return !!normalized && isHttpUrl(normalized) && !isLocalhostUrl(normalized);
+  if (!normalized) return false;
+  if (normalized.startsWith('/')) return true;
+  return isHttpUrl(normalized) && !isLocalhostUrl(normalized);
 }
 
 function resolveApiBaseUrl() {
@@ -126,6 +131,7 @@ function resolveApiBaseUrl() {
   const fallback = DEFAULT_API_URL;
   const stored = normalizeBaseUrl(localStorage.getItem(API_URL_STORAGE_KEY));
   if (!stored) return fallback;
+  if (IS_DEV && stored === DEFAULT_API_BASE_URL && fallback === DEV_API_PROXY_BASE_URL) return fallback;
   if (isLocalhostUrl(stored)) return fallback;
   return stored;
 }
@@ -1247,6 +1253,11 @@ function getQueueIssIncidenceValue(item) {
 function resolveDocumentUrl(baseUrl, value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
+  if (String(baseUrl || '').startsWith('/')) {
+    const base = String(baseUrl || '').replace(/\/+$/, '');
+    const path = raw.startsWith('/') ? raw : `/${raw}`;
+    return path.startsWith(`${base}/`) ? path : `${base}${path}`;
+  }
   try {
     return new URL(raw, baseUrl).toString();
   } catch {
