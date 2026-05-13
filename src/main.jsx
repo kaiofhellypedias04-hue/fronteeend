@@ -13,6 +13,7 @@ import '../assets/styles.css';
 
 const ReactDOM = { createPortal, createRoot };
 const VITE_API_BASE_URL = import.meta.env?.VITE_API_BASE_URL || '';
+const IS_DEV = Boolean(import.meta.env.DEV);
 const { RELATORIO_COLUNAS } = window.NFSEConstants;
 const { cn, fmtMoney: fmtMoneyRaw, toCSV } = window.NFSEFormat;
 const {
@@ -36,7 +37,7 @@ const {
   tipoNotaLabel,
 } = window.NFSEStatus;
 const { QUEUE_DATE_RANGE_ERROR } = window.NFSEQueue;
-if (import.meta.env.DEV) {
+if (IS_DEV) {
   console.info('[main.jsx] dev bundle loaded', { loadedAt: new Date().toISOString() });
 }
 
@@ -61,6 +62,7 @@ const GROUP_STORAGE_KEY = 'grupo_atual';
 // Fase 1: seleção visual de grupo, não é segurança real.
 // Segurança real será feita no backend em fase futura.
 const GROUP_OPTIONS = [
+  { key: 'todos', label: 'Todos', match: '' },
   { key: 'canopus', label: 'Grupo Canopus', match: 'CANOPUS' },
   { key: 'marox', label: 'Grupo Marox', match: 'MAROX' },
 ];
@@ -148,17 +150,41 @@ function getGroupLabel(groupKey) {
 
 function pertenceAoGrupo(certAlias, grupo) {
   const group = getGroupMeta(grupo);
-  if (!group) return true;
+  if (!group || !group.match) return true;
   return String(certAlias || '').toUpperCase().includes(group.match);
 }
 
 function filterGroupAliases(items, grupo, getAlias = item => item?.alias) {
   const list = Array.isArray(items) ? items : [];
-  return list.filter(item => pertenceAoGrupo(getAlias(item), grupo));
+  const group = getGroupMeta(grupo);
+  if (!group || !group.match) return list;
+  const filtered = list.filter(item => pertenceAoGrupo(getAlias(item), grupo));
+  return filtered.length > 0 || list.length === 0 ? filtered : list;
+}
+
+function getGroupFilterState(items, grupo, getAlias = item => item?.alias) {
+  const list = Array.isArray(items) ? items : [];
+  const group = getGroupMeta(grupo);
+  if (!group || !group.match) {
+    return { items: list, active: false, empty: false, filteredCount: list.length, totalCount: list.length };
+  }
+  const filtered = list.filter(item => pertenceAoGrupo(getAlias(item), grupo));
+  return {
+    items: filtered,
+    active: true,
+    empty: list.length > 0 && filtered.length === 0,
+    filteredCount: filtered.length,
+    totalCount: list.length,
+  };
+}
+
+function devLog(label, details = {}) {
+  if (IS_DEV) console.info(`[nfse-debug] ${label}`, details);
 }
 
 function dashboardItemPertenceAoGrupo(item, grupo) {
-  if (!getGroupMeta(grupo)) return true;
+  const group = getGroupMeta(grupo);
+  if (!group || !group.match) return true;
   // Fase 1: filtro visual por grupo; segurança real será feita no backend.
   return [item?.cert_alias, item?.client_name, item?.empresa, item?.nome, item?.alias]
     .some(value => String(value || '').trim() && pertenceAoGrupo(value, grupo));
@@ -350,6 +376,36 @@ function firstDefinedValue(...values) {
   return undefined;
 }
 
+function extractResponseList(payload, preferredKeys = ['items', 'data', 'results', 'rows'], depth = 0) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== 'object' || depth > 2) return [];
+  const keys = [...preferredKeys, 'items', 'data', 'results', 'rows'];
+  for (const key of [...new Set(keys)]) {
+    const value = payload[key];
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === 'object') {
+      const nested = extractResponseList(value, preferredKeys, depth + 1);
+      if (nested.length) return nested;
+    }
+  }
+  return [];
+}
+
+function extractResponseTotal(payload, fallback = 0) {
+  if (Array.isArray(payload)) return payload.length;
+  if (!payload || typeof payload !== 'object') return fallback;
+  const rawTotal = firstDefinedValue(
+    payload.total,
+    payload.count,
+    payload.total_count,
+    payload.total_items,
+    payload.total_notas,
+    payload.notas
+  );
+  const total = Number(rawTotal);
+  return Number.isFinite(total) ? total : fallback;
+}
+
 function toQueueOptionAlias(entry) {
   if (!entry) return '';
   if (typeof entry === 'string') return entry.trim();
@@ -494,6 +550,7 @@ function buildQueueTributosComparativo(row) {
 }
 
 const API_CACHE_TTL_MS = 45_000;
+const CRITICAL_LIST_CACHE_TTL_MS = 30_000;
 const API_CACHE_MAX_ENTRIES = 80;
 const API_SESSION_CACHE_PREFIX = 'nfse_api_cache_v1:';
 const API_SESSION_CACHE_MAX_BYTES = 800_000;
@@ -589,18 +646,36 @@ async function api(baseUrl, path, opts = {}) {
 
   if (isCacheable) {
     const cached = readApiCache(key, ttl);
-    if (cached !== null) return cached;
-    if (apiPendingRequests.has(key)) return apiPendingRequests.get(key);
+    if (cached !== null) {
+      devLog('cache hit', {
+        endpoint: path,
+        items: extractResponseList(cached).length,
+        total: extractResponseTotal(cached, extractResponseList(cached).length),
+      });
+      return cached;
+    }
+    if (apiPendingRequests.has(key)) {
+      devLog('pending request reused', { endpoint: path });
+      return apiPendingRequests.get(key);
+    }
   }
 
   if (!isCacheable) clearApiCache();
 
   const request = (async () => {
+    devLog('request', { method, endpoint: path, cache: isCacheable ? 'default' : 'no-store' });
     const res = await fetch(`${baseUrl}${path}`, req);
     const txt = await res.text();
     let data;
     try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
     if (!res.ok) throw new Error(data?.detail || data?.message || txt || `HTTP ${res.status}`);
+    const responseItems = extractResponseList(data);
+    devLog('response', {
+      endpoint: path,
+      status: res.status,
+      items: responseItems.length,
+      total: extractResponseTotal(data, responseItems.length),
+    });
     if (isCacheable) writeApiCache(key, data);
     return data;
   })();
@@ -1155,7 +1230,7 @@ function prefetchDefaultQueue(baseUrl) {
     pageSize: DEFAULT_QUEUE_PAGE_SIZE,
     filters: getQueueDefaultFilters(),
   });
-  return prefetchApi(baseUrl, `/nfse?${q.toString()}`, { cacheTtl: 120_000 });
+  return prefetchApi(baseUrl, `/nfse?${q.toString()}`, { cacheTtl: CRITICAL_LIST_CACHE_TTL_MS });
 }
 
 function prefetchNoteDocuments(baseUrl, noteId) {
@@ -3399,7 +3474,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
 
   const filterOptions = useMemo(() => {
     return {
-      empresas: getQueueCompanyOptions(filaData.data, filaData.items).filter(alias => pertenceAoGrupo(alias, grupoAtual)),
+      empresas: filterGroupAliases(getQueueCompanyOptions(filaData.data, filaData.items), grupoAtual, alias => alias),
       responsaveis: getQueueResponsibleOptions(filaData.data, filaData.items),
       incidencias_iss: getQueueIssIncidenceOptions(filaData.data),
     };
@@ -3476,23 +3551,34 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
       });
       const queuePath = `/nfse?${q.toString()}`;
       const cachedQueueData = page === 1 && !forceRefresh
-        ? readApiCache(apiCacheKey(baseUrl, queuePath), 120_000)
+        ? readApiCache(apiCacheKey(baseUrl, queuePath), CRITICAL_LIST_CACHE_TTL_MS)
         : null;
 
       if (cachedQueueData) {
-        const cachedItems = Array.isArray(cachedQueueData?.items) ? cachedQueueData.items.map(mapQueueItem) : [];
-        const cachedTotal = Number(cachedQueueData?.total);
-        queueLoadMorePendingRef.current = false;
-        setFilaData({
-          data: cachedQueueData,
-          items: cachedItems,
-          loading: false,
-          loadingMore: false,
-          error: '',
-          total: Number.isFinite(cachedTotal) ? cachedTotal : cachedItems.length,
-          lastPageCount: cachedItems.length,
-        });
-        return;
+        const cachedRawItems = extractResponseList(cachedQueueData);
+        const cachedItems = cachedRawItems.map(mapQueueItem);
+        const cachedTotal = extractResponseTotal(cachedQueueData, cachedItems.length);
+        if (cachedItems.length > 0 || cachedTotal > 0) {
+          devLog('queue cache render', {
+            endpoint: queuePath,
+            received: cachedRawItems.length,
+            rendered: cachedItems.length,
+            total: cachedTotal,
+            grupoAtual,
+          });
+          queueLoadMorePendingRef.current = false;
+          setFilaData({
+            data: cachedQueueData,
+            items: cachedItems,
+            loading: false,
+            loadingMore: false,
+            error: '',
+            total: cachedTotal,
+            lastPageCount: cachedItems.length,
+          });
+          return;
+        }
+        devLog('queue cache ignored', { endpoint: queuePath, reason: 'empty cached payload', grupoAtual });
       }
 
       setFilaData(prev => ({
@@ -3510,11 +3596,12 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
         const data = await api(baseUrl, queuePath, {
           signal: controller.signal,
           cache: forceRefresh ? 'no-store' : undefined,
-          cacheTtl: 120_000,
+          cacheTtl: CRITICAL_LIST_CACHE_TTL_MS,
         });
         if (cancelled || controller.signal.aborted) return;
 
-        const nextItems = Array.isArray(data?.items) ? data.items.map(mapQueueItem) : [];
+        const rawItems = extractResponseList(data);
+        const nextItems = rawItems.map(mapQueueItem);
         setFilaData(prev => {
           let mergedItems = nextItems;
           if (page > 1) {
@@ -3524,7 +3611,15 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
             });
             mergedItems = [...byId.values()];
           }
-          const total = Number(data?.total);
+          const total = extractResponseTotal(data, mergedItems.length);
+          devLog('queue render', {
+            endpoint: queuePath,
+            received: rawItems.length,
+            rendered: mergedItems.length,
+            total,
+            grupoAtual,
+            forceRefresh,
+          });
 
           return {
             data,
@@ -3532,7 +3627,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
             loading: false,
             loadingMore: false,
             error: '',
-            total: Number.isFinite(total) ? total : mergedItems.length,
+            total,
             lastPageCount: nextItems.length,
           };
         });
@@ -3583,11 +3678,13 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
   }, [prefetchQueueNote]);
 
   const setFilter = (key, value) => {
+    clearApiCache();
     setPage(1);
     setFilters(prev => ({ ...prev, [key]: value }));
   };
 
   const refreshQueue = useCallback(() => {
+    clearApiCache();
     queueLoadMorePendingRef.current = false;
     forceQueueRefreshRef.current = true;
     setPage(1);
@@ -3615,6 +3712,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
 
   const restoreYesterdayFilters = () => {
     const defaults = getQueueDefaultFilters();
+    clearApiCache();
     setPage(1);
     setFilters(prev => ({
       ...prev,
@@ -4011,7 +4109,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
               <input
                 className="input"
                 value={smartSearch}
-                onChange={e => { setPage(1); setSmartSearch(e.target.value); }}
+                onChange={e => { clearApiCache(); setPage(1); setSmartSearch(e.target.value); }}
                 placeholder="Busque em todas as colunas ou use competencia:, empresa:, prestador:, nota:, chave:, valor:, status:, prioridade:, responsavel:, entrada:, sla:"
               />
             </div>
@@ -4301,21 +4399,38 @@ function NFSePage({ baseUrl, toast, grupoAtual }) {
     competencia: '', codigo_servico: '', somente_divergentes: false,
   });
   const debouncedFilters = useDebouncedValue(filters, 350);
+  const [showAllGroups, setShowAllGroups] = useState(false);
+  const forceAllNfseRefreshRef = useRef(false);
+  const forceNfseListRefreshRef = useRef(false);
 
   // Busca resumida de todas as notas para montar o painel de empresas
-  const allNfse = useAsync(signal => api(baseUrl, '/nfse?page=1&page_size=500', { signal, cacheTtl: 60_000 }), [baseUrl]);
+  const allNfse = useAsync(signal => {
+    const forceRefresh = forceAllNfseRefreshRef.current;
+    if (forceRefresh) forceAllNfseRefreshRef.current = false;
+    return api(baseUrl, '/nfse?page=1&page_size=500', {
+      signal,
+      cache: forceRefresh ? 'no-store' : undefined,
+      cacheTtl: CRITICAL_LIST_CACHE_TTL_MS,
+    });
+  }, [baseUrl]);
 
   // Notas da empresa selecionada
   const nfseList = useAsync(signal => {
     if (!empresaSelecionada) return Promise.resolve({ items: [], total: 0 });
+    const forceRefresh = forceNfseListRefreshRef.current;
+    if (forceRefresh) forceNfseListRefreshRef.current = false;
     const q = new URLSearchParams({ page, page_size: pageSize, cert_alias: empresaSelecionada });
     Object.entries(debouncedFilters).forEach(([k, v]) => { if (v !== '' && v !== false) q.set(k, String(v)); });
-    return api(baseUrl, `/nfse?${q}`, { signal });
+    return api(baseUrl, `/nfse?${q}`, {
+      signal,
+      cache: forceRefresh ? 'no-store' : undefined,
+      cacheTtl: CRITICAL_LIST_CACHE_TTL_MS,
+    });
   }, [baseUrl, empresaSelecionada, page, pageSize, JSON.stringify(debouncedFilters)]);
 
   // Agrupa por cert_alias
   const empresas = useMemo(() => {
-    const items = allNfse.data?.items || [];
+    const items = extractResponseList(allNfse.data);
     const map = {};
     items.forEach(r => {
       const alias = r.certificado || r.cert_alias || '';
@@ -4328,9 +4443,13 @@ function NFSePage({ baseUrl, toast, grupoAtual }) {
     return Object.values(map).sort((a, b) => a.nome.localeCompare(b.nome));
   }, [allNfse.data]);
 
-  const empresasVisiveis = useMemo(() => {
-    return empresas.filter(e => pertenceAoGrupo(e.alias, grupoAtual));
-  }, [empresas, grupoAtual]);
+  const groupFilterInfo = useMemo(
+    () => getGroupFilterState(empresas, grupoAtual, item => item.alias),
+    [empresas, grupoAtual]
+  );
+  const groupFilterActive = groupFilterInfo.active && !showAllGroups;
+  const empresasVisiveis = groupFilterActive ? groupFilterInfo.items : empresas;
+  const groupFilterEmpty = groupFilterActive && groupFilterInfo.empty;
 
   const empresasFiltradas = useMemo(() => {
     const t = buscaDebounced.trim().toLowerCase();
@@ -4338,10 +4457,35 @@ function NFSePage({ baseUrl, toast, grupoAtual }) {
   }, [empresasVisiveis, buscaDebounced]);
 
   const emp = empresaSelecionada ? empresas.find(e => e.alias === empresaSelecionada) : null;
-  const nfseItems = nfseList.data?.items || [];
+  const nfseItems = extractResponseList(nfseList.data);
   const empresasVirtual = useVirtualRows(empresasFiltradas, { rowHeight: 50, overscan: 8 });
   const nfseVirtual = useVirtualRows(nfseItems, { rowHeight: 48, overscan: 10 });
-  const sf = (k, v) => { setPage(1); setFilters(f => ({ ...f, [k]: v })); };
+  const nfseTotal = extractResponseTotal(nfseList.data, nfseItems.length);
+  const sf = (k, v) => { clearApiCache(); setPage(1); setFilters(f => ({ ...f, [k]: v })); };
+  const reloadAllNfse = () => {
+    clearApiCache();
+    forceAllNfseRefreshRef.current = true;
+    allNfse.reload().catch(() => {});
+  };
+  const reloadNfseList = () => {
+    clearApiCache();
+    forceNfseListRefreshRef.current = true;
+    nfseList.reload().catch(() => {});
+  };
+
+  useEffect(() => {
+    setShowAllGroups(false);
+  }, [grupoAtual]);
+
+  useEffect(() => {
+    devLog('nfse render', {
+      endpoint: empresaSelecionada ? '/nfse?cert_alias=...' : '/nfse?page=1&page_size=500',
+      received: empresaSelecionada ? nfseItems.length : extractResponseList(allNfse.data).length,
+      afterGroupFilter: empresasVisiveis.length,
+      grupoAtual,
+      showAllGroups,
+    });
+  }, [allNfse.data, empresaSelecionada, empresasVisiveis.length, grupoAtual, nfseItems.length, showAllGroups]);
 
   const filterFields = [
     { k: 'status',         l: 'Status' },
@@ -4356,7 +4500,7 @@ function NFSePage({ baseUrl, toast, grupoAtual }) {
       <SectionHeader
         title={empresaSelecionada ? (
           <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <button className="btn btn-ghost btn-xs" onClick={() => { setEmpresaSelecionada(null); setPage(1); setFilters({ status: '', municipio: '', cnpj_cpf: '', competencia: '', codigo_servico: '', somente_divergentes: false }); }}
+            <button className="btn btn-ghost btn-xs" onClick={() => { clearApiCache(); setEmpresaSelecionada(null); setPage(1); setFilters({ status: '', municipio: '', cnpj_cpf: '', competencia: '', codigo_servico: '', somente_divergentes: false }); }}
               style={{ fontSize: 11 }}>← Empresas</button>
             {emp?.nome || clientName(empresaSelecionada)}
           </span>
@@ -4364,15 +4508,19 @@ function NFSePage({ baseUrl, toast, grupoAtual }) {
         sub={empresaSelecionada
           ? `Notas fiscais de ${emp?.nome || empresaSelecionada}`
           : 'Selecione uma empresa para ver suas notas'}
-        actions={empresaSelecionada && (
+        actions={
           <>
-            <button className="btn btn-ghost btn-sm" disabled={!nfseList.data?.items?.length}
-              onClick={() => dlCSV(nfseList.data.items, `nfse_${empresaSelecionada}.csv`)}>
-              <IconDown /> CSV
+            {empresaSelecionada ? (
+              <button className="btn btn-ghost btn-sm" disabled={!nfseItems.length}
+                onClick={() => dlCSV(nfseItems, `nfse_${empresaSelecionada}.csv`)}>
+                <IconDown /> CSV
+              </button>
+            ) : null}
+            <button className="btn btn-ghost btn-sm" onClick={empresaSelecionada ? reloadNfseList : reloadAllNfse}>
+              <IconRefresh /> Atualizar
             </button>
-            <button className="btn btn-ghost btn-sm" onClick={nfseList.reload}><IconRefresh /></button>
           </>
-        )}
+        }
       />
 
       {/* ── Nível 1: Lista de empresas ── */}
@@ -4382,6 +4530,15 @@ function NFSePage({ baseUrl, toast, grupoAtual }) {
             <input className="input" placeholder="Buscar empresa..." value={busca}
               onChange={e => setBusca(e.target.value)} />
           </div>
+          {allNfse.error ? <Alert type="error">{allNfse.error}</Alert> : null}
+          {groupFilterEmpty ? (
+            <Alert type="info">
+              Nenhum item neste grupo. O backend retornou {groupFilterInfo.totalCount} empresa(s), mas nenhuma combina com {getGroupLabel(grupoAtual)}.
+              <button className="btn btn-ghost btn-xs" style={{ marginLeft: 10 }} onClick={() => setShowAllGroups(true)}>
+                Ver todos
+              </button>
+            </Alert>
+          ) : null}
 
           {allNfse.loading ? <TableSkeleton rows={8} columns={5} /> : (
             <div className="card">
@@ -4399,7 +4556,7 @@ function NFSePage({ baseUrl, toast, grupoAtual }) {
                     </tr></thead>
                     <tbody>
                       {empresasFiltradas.length === 0
-                        ? <Empty msg="Nenhuma nota encontrada" />
+                        ? <Empty msg={groupFilterEmpty ? 'Nenhum item neste grupo.' : 'Nenhuma nota encontrada'} />
                         : (
                           <>
                             {empresasVirtual.paddingTop > 0 && (
@@ -4409,7 +4566,7 @@ function NFSePage({ baseUrl, toast, grupoAtual }) {
                             )}
                             {empresasVirtual.visibleItems.map(e => (
                           <tr key={e.alias} style={{ cursor: 'pointer' }}
-                            onClick={() => { setEmpresaSelecionada(e.alias); setPage(1); }}>
+                            onClick={() => { clearApiCache(); setEmpresaSelecionada(e.alias); setPage(1); }}>
                             <td className="primary">{e.nome}</td>
                             <td className="mono">{e.total}</td>
                             <td>
@@ -4517,7 +4674,7 @@ function NFSePage({ baseUrl, toast, grupoAtual }) {
             </div>
           </div>
 
-          <Pagination page={page} pageSize={pageSize} total={nfseList.data?.total || 0}
+          <Pagination page={page} pageSize={pageSize} total={nfseTotal}
             onPage={setPage} onSize={s => { setPageSize(s); setPage(1); }} />
         </>
       )}
@@ -4765,7 +4922,15 @@ function RelatorioPage({ baseUrl, toast }) {
 
 // ── Page: Certificados ───────────────────────────────────────
 function CertificadosPage({ baseUrl, toast, grupoAtual }) {
-  const list = useAsync(signal => api(baseUrl, '/certificados', { signal }), [baseUrl]);
+  const forceCertRefreshRef = useRef(false);
+  const list = useAsync(signal => {
+    const forceRefresh = forceCertRefreshRef.current;
+    if (forceRefresh) forceCertRefreshRef.current = false;
+    return api(baseUrl, '/certificados', {
+      signal,
+      cache: forceRefresh ? 'no-store' : undefined,
+    });
+  }, [baseUrl]);
   const [modal, setModal] = useState(null); // null | 'new' | 'edit' | 'pass'
   const [current, setCurrent] = useState(null);
   const [confirm, setConfirm] = useState(null);
@@ -4773,10 +4938,25 @@ function CertificadosPage({ baseUrl, toast, grupoAtual }) {
   const [passForm, setPassForm] = useState({ password: '', confirm: '' });
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
-  const certificadosVisiveis = useMemo(
-    () => filterGroupAliases(list.data?.certificados || [], grupoAtual),
-    [list.data?.certificados, grupoAtual]
+  const certificados = useMemo(
+    () => extractResponseList(list.data, ['certificados', 'items', 'data', 'results', 'rows']),
+    [list.data]
   );
+  const certificadosTotal = extractResponseTotal(list.data, certificados.length);
+  const refreshCertificados = () => {
+    clearApiCache();
+    forceCertRefreshRef.current = true;
+    list.reload().catch(() => {});
+  };
+
+  useEffect(() => {
+    devLog('certificados render', {
+      endpoint: '/certificados',
+      received: certificados.length,
+      afterGroupFilter: certificados.length,
+      grupoAtual,
+    });
+  }, [certificados.length, grupoAtual]);
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
 
@@ -4812,7 +4992,7 @@ function CertificadosPage({ baseUrl, toast, grupoAtual }) {
       }
       toast('Certificado cadastrado.', 'success');
       setModal(null); setForm({ alias: '', client_name: '', password: '', file: null });
-      list.reload();
+      list.reload().catch(() => {});
     } catch (e) {
       const msg = e.message || 'Falha ao cadastrar certificado.';
       setFormError(msg);
@@ -4825,7 +5005,7 @@ function CertificadosPage({ baseUrl, toast, grupoAtual }) {
     try {
       await api(baseUrl, `/certificados/${current.alias}`, { method: 'PUT', body: { alias: form.alias, client_name: form.client_name } });
       toast('Certificado atualizado.', 'success');
-      setModal(null); list.reload();
+      setModal(null); list.reload().catch(() => {});
     } catch (e) { toast(e.message, 'error'); } finally { setSaving(false); }
   };
 
@@ -4842,17 +5022,26 @@ function CertificadosPage({ baseUrl, toast, grupoAtual }) {
   const doDelete = async () => {
     try {
       await api(baseUrl, `/certificados/${confirm}`, { method: 'DELETE' });
-      toast('Certificado excluído.', 'success'); setConfirm(null); list.reload();
+      toast('Certificado excluído.', 'success'); setConfirm(null); list.reload().catch(() => {});
     } catch (e) { toast(e.message, 'error'); setConfirm(null); }
   };
 
   return (
     <div className="page-enter">
-      <SectionHeader title="Certificados" sub="Gestão de certificados digitais PFX"
-        actions={<button className="btn btn-primary btn-sm" onClick={() => { setForm({ alias: '', client_name: '', password: '', file: null }); setFormError(''); setModal('new'); }}><IconPlus /> Novo certificado</button>}
+      <SectionHeader title="Certificados" sub={list.loading ? 'Carregando certificados...' : `${certificadosTotal} certificado(s) encontrado(s)`}
+        actions={
+          <>
+            <button className="btn btn-ghost btn-sm" onClick={refreshCertificados}><IconRefresh /> Atualizar</button>
+            <button className="btn btn-primary btn-sm" onClick={() => { setForm({ alias: '', client_name: '', password: '', file: null }); setFormError(''); setModal('new'); }}><IconPlus /> Novo certificado</button>
+          </>
+        }
       />
+      {list.error ? <Alert type="error">{list.error}</Alert> : null}
 
       <div className="card">
+        <div className="card-header">
+          <span className="card-title">{certificados.length} certificado(s)</span>
+        </div>
         <div className="card-body" style={{ padding: 0 }}>
           {list.loading ? <div style={{ padding: 24 }}><Loading /></div> : (
             <div className="table-wrap scrollable" style={{ border: 'none', borderRadius: 0 }}>
@@ -4861,8 +5050,8 @@ function CertificadosPage({ baseUrl, toast, grupoAtual }) {
                   <th>Empresa</th><th>Alias</th><th>Arquivo</th><th>Status</th><th></th>
                 </tr></thead>
                 <tbody>
-                  {certificadosVisiveis.length === 0 ? <Empty msg="Nenhum certificado cadastrado" /> :
-                    certificadosVisiveis.map(r => (
+                  {certificados.length === 0 ? <Empty msg="Nenhum certificado cadastrado" /> :
+                    certificados.map(r => (
                       <tr key={r.alias}>
                         <td className="primary">{clientName(r.alias)}</td>
                         <td className="mono">{r.alias}</td>
@@ -5272,6 +5461,7 @@ function App() {
   const selecionarGrupo = groupKey => {
     const next = normalizeGroupKey(groupKey);
     if (!next) return;
+    clearApiCache();
     localStorage.setItem(GROUP_STORAGE_KEY, next);
     setActive('dashboard');
     setMobileOpen(false);
@@ -5281,6 +5471,7 @@ function App() {
   };
 
   const trocarGrupo = () => {
+    clearApiCache();
     localStorage.removeItem(GROUP_STORAGE_KEY);
     setActive('dashboard');
     setMobileOpen(false);
