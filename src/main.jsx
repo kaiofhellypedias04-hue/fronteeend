@@ -640,6 +640,36 @@ async function api(baseUrl, path, opts = {}) {
   const method = (opts.method || 'GET').toUpperCase();
   const headers = new Headers(opts.headers || {});
   const req = { method, headers, signal: opts.signal };
+  const timeoutMs = Number(opts.timeoutMs);
+  const timeoutMessage = opts.timeoutMessage || 'Tempo limite excedido. Tente novamente.';
+  let timeoutId = null;
+  let timedOut = false;
+  let abortListener = null;
+  let timeoutController = null;
+
+  if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    timeoutController = new AbortController();
+    req.signal = timeoutController.signal;
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      timeoutController.abort();
+    }, timeoutMs);
+
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        timeoutController.abort();
+      } else {
+        abortListener = () => timeoutController.abort();
+        opts.signal.addEventListener('abort', abortListener, { once: true });
+      }
+    }
+  }
+
+  const cleanupRequest = () => {
+    if (timeoutId) clearTimeout(timeoutId);
+    if (opts.signal && abortListener) opts.signal.removeEventListener('abort', abortListener);
+  };
+
   if (opts.body instanceof FormData) {
     req.body = opts.body;
   } else if (opts.body != null) {
@@ -658,10 +688,12 @@ async function api(baseUrl, path, opts = {}) {
         items: extractResponseList(cached).length,
         total: extractResponseTotal(cached, extractResponseList(cached).length),
       });
+      cleanupRequest();
       return cached;
     }
     if (apiPendingRequests.has(key)) {
       devLog('pending request reused', { endpoint: path });
+      cleanupRequest();
       return apiPendingRequests.get(key);
     }
   }
@@ -670,20 +702,27 @@ async function api(baseUrl, path, opts = {}) {
 
   const request = (async () => {
     devLog('request', { method, endpoint: path, cache: isCacheable ? 'default' : 'no-store' });
-    const res = await fetch(`${baseUrl}${path}`, req);
-    const txt = await res.text();
-    let data;
-    try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
-    if (!res.ok) throw new Error(data?.detail || data?.message || txt || `HTTP ${res.status}`);
-    const responseItems = extractResponseList(data);
-    devLog('response', {
-      endpoint: path,
-      status: res.status,
-      items: responseItems.length,
-      total: extractResponseTotal(data, responseItems.length),
-    });
-    if (isCacheable) writeApiCache(key, data);
-    return data;
+    try {
+      const res = await fetch(`${baseUrl}${path}`, req);
+      const txt = await res.text();
+      let data;
+      try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
+      if (!res.ok) throw new Error(data?.detail || data?.message || txt || `HTTP ${res.status}`);
+      const responseItems = extractResponseList(data);
+      devLog('response', {
+        endpoint: path,
+        status: res.status,
+        items: responseItems.length,
+        total: extractResponseTotal(data, responseItems.length),
+      });
+      if (isCacheable) writeApiCache(key, data);
+      return data;
+    } catch (e) {
+      if (timedOut) throw new Error(timeoutMessage);
+      throw e;
+    } finally {
+      cleanupRequest();
+    }
   })();
 
   if (isCacheable && !opts.signal) {
@@ -1239,11 +1278,6 @@ function prefetchDefaultQueue(baseUrl) {
   return prefetchApi(baseUrl, `/nfse?${q.toString()}`, { cacheTtl: CRITICAL_LIST_CACHE_TTL_MS });
 }
 
-function prefetchNoteDocuments(baseUrl, noteId) {
-  if (!noteId) return Promise.resolve(null);
-  return prefetchApi(baseUrl, `/nfse/${noteId}/documentos`, { cacheTtl: 180_000 });
-}
-
 function getQueueIssIncidenceValue(item) {
   const value = firstDefinedValue(item?.incidencia_iss, item?.incidencia, item?.incidencia_do_iss);
   const text = String(value ?? '').trim();
@@ -1395,7 +1429,12 @@ function QueueNoteDocuments({ baseUrl, selected, toast }) {
   }, [baseUrl, noteId]);
   const docsData = useAsync(signal => {
     if (!noteId) return Promise.resolve({ xml: null, pdf: null });
-    return api(baseUrl, `/nfse/${noteId}/documentos`, { signal, cacheTtl: 180_000 }).then(data => resolveNoteDocuments(baseUrl, data));
+    return api(baseUrl, `/nfse/${noteId}/documentos`, {
+      signal,
+      cacheTtl: 180_000,
+      timeoutMs: 10_000,
+      timeoutMessage: 'Não foi possível carregar documentos agora. Tentar novamente.',
+    }).then(data => resolveNoteDocuments(baseUrl, data));
   }, [baseUrl, noteId]);
 
   const documents = docsData.data || cachedDocuments;
@@ -1431,7 +1470,12 @@ function QueueNoteDocuments({ baseUrl, selected, toast }) {
       ) : loadingDocuments ? (
         <Loading label="Carregando documentos..." />
       ) : docsData.error ? (
-        <Alert type="error">{docsData.error}</Alert>
+        <Alert type="error">
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <span>Não foi possível carregar documentos agora. Tentar novamente.</span>
+            <button className="btn btn-ghost btn-sm" onClick={docsData.reload}>Tentar novamente</button>
+          </div>
+        </Alert>
       ) : (!pdfFile && !xmlFile) ? (
         <Alert type="info">Nenhum XML ou PDF foi encontrado para esta nota.</Alert>
       ) : (
@@ -3452,7 +3496,6 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
   const [reapplyingRules, setReapplyingRules] = useState(false);
   const [smartSearch, setSmartSearch] = useState('');
   const queueLoadMorePendingRef = useRef(false);
-  const prefetchedNoteIdsRef = useRef(new Set());
   const forceQueueRefreshRef = useRef(false);
   const [queueReloadTick, setQueueReloadTick] = useState(0);
   const [ruleForm, setRuleForm] = useState({
@@ -3671,22 +3714,10 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
     setResponsavelFila(selected?.responsavel || '');
   }, [selected]);
 
-  useEffect(() => {
-    prefetchedNoteIdsRef.current.clear();
-  }, [baseUrl]);
-
-  const prefetchQueueNote = useCallback(item => {
-    const noteId = item?.id;
-    if (!noteId || prefetchedNoteIdsRef.current.has(noteId)) return;
-    prefetchedNoteIdsRef.current.add(noteId);
-    prefetchNoteDocuments(baseUrl, noteId);
-  }, [baseUrl]);
-
   const openQueueItem = useCallback(item => {
     if (!item) return;
-    prefetchQueueNote(item);
     setSelected(item);
-  }, [prefetchQueueNote]);
+  }, []);
 
   const setFilter = (key, value) => {
     clearApiCache();
@@ -4197,16 +4228,12 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
                             item.queue_sla.tone === 'danger' && 'queue-row-attention',
                             hasQueueDocumentAttention(item) && 'queue-row-documental-attention'
                           )}
-                          onMouseEnter={() => prefetchQueueNote(item)}
-                          onFocus={() => prefetchQueueNote(item)}
                           onClick={() => openQueueItem(item)}
                         >
                           <td className="primary mono">{item.queue_numero_nota}</td>
                           <td className="actions">
                             <button
                               className={cn('btn btn-xs', hasAssignedQueueResponsible(item.queue_responsavel) ? 'btn-primary' : 'btn-danger')}
-                              onMouseEnter={() => prefetchQueueNote(item)}
-                              onFocus={() => prefetchQueueNote(item)}
                               onClick={e => { e.stopPropagation(); openQueueItem(item); }}
                             >
                               {hasAssignedQueueResponsible(item.queue_responsavel) ? 'Analisado' : 'Analisar'}
