@@ -758,6 +758,48 @@ tbody td.actions { white-space: nowrap; }
   font-size: 13px;
 }
 
+.virtual-table {
+  contain: content;
+}
+
+.virtual-spacer,
+.virtual-spacer:hover {
+  background: transparent !important;
+  border-bottom: none !important;
+}
+
+.virtual-spacer td {
+  padding: 0 !important;
+  border: 0 !important;
+}
+
+.table-skeleton {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+}
+
+.table-skeleton-row {
+  display: grid;
+  grid-template-columns: repeat(var(--skeleton-cols, 6), minmax(72px, 1fr));
+  gap: 10px;
+  min-height: 30px;
+}
+
+.table-skeleton-cell {
+  display: block;
+  height: 14px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2));
+  background-size: 220% 100%;
+  animation: skeleton-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  0% { background-position: 120% 0; }
+  100% { background-position: -120% 0; }
+}
+
 /* ── Badges ────────────────────────────────────────────────── */
 .badge {
   display: inline-flex;
@@ -912,6 +954,16 @@ tbody td.actions { white-space: nowrap; }
   align-items: center;
   gap: 10px;
   padding: 32px 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.route-loading {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
   color: var(--text-3);
   font-size: 13px;
 }
