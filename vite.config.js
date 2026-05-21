@@ -6,7 +6,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'https://web-production-62f13.up.railway.app',
+        target: 'https://backeend-production-5a65.up.railway.app',
         changeOrigin: true,
         secure: true,
         rewrite: path => path.replace(/^\/api/, ''),

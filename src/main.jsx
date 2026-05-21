@@ -71,7 +71,7 @@ const LEGACY_GROUP_OPTIONS = [
   { id: 'legacy:marox', key: 'marox', label: 'Grupo Marox', match: 'MAROX', legacy: true },
 ];
 
-const RAILWAY_API_BASE_URL = 'https://backeend-production-5a65.up.railway.app/';
+const RAILWAY_API_BASE_URL = 'https://backeend-production-5a65.up.railway.app';
 const DEV_API_PROXY_BASE_URL = '/api';
 const DEFAULT_API_BASE_URL = normalizeBaseUrl(RAILWAY_API_BASE_URL);
 
@@ -85,7 +85,7 @@ function resolveDefaultApiUrl() {
   const viteUrl = normalizeBaseUrl(readViteApiBaseUrl());
   if (viteUrl) return viteUrl;
   if (IS_DEV) return DEV_API_PROXY_BASE_URL;
-  return normalizeBaseUrl(window.__APP_CONFIG__?.API_BASE_URL || '');
+  return normalizeBaseUrl(window.__APP_CONFIG__?.API_BASE_URL || DEFAULT_API_BASE_URL);
 }
 
 
@@ -112,10 +112,30 @@ function isLocalhostUrl(url) {
   }
 }
 
-function isHttpUrl(url) {
+function isHttpsUrl(url) {
   try {
     const u = new URL(url);
-    return u.protocol === 'http:' || u.protocol === 'https:';
+    return u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function isRailwayInternalUrl(url) {
+  try {
+    const u = new URL(url);
+    const host = String(u.hostname || '').toLowerCase();
+    return host === 'backeend.railway.internal' || host.endsWith('.railway.internal');
+  } catch {
+    return false;
+  }
+}
+
+function isKnownDeadApiBaseUrl(url) {
+  try {
+    const u = new URL(url);
+    const host = String(u.hostname || '').toLowerCase();
+    return host === 'web-production-62f13.up.railway.app';
   } catch {
     return false;
   }
@@ -125,7 +145,10 @@ function isAllowedApiBaseUrl(url) {
   const normalized = normalizeBaseUrl(url);
   if (!normalized) return false;
   if (normalized.startsWith('/')) return true;
-  return isHttpUrl(normalized) && !isLocalhostUrl(normalized);
+  return isHttpsUrl(normalized)
+    && !isLocalhostUrl(normalized)
+    && !isRailwayInternalUrl(normalized)
+    && !isKnownDeadApiBaseUrl(normalized);
 }
 
 function resolveApiBaseUrl() {
@@ -136,8 +159,39 @@ function resolveApiBaseUrl() {
   const stored = normalizeBaseUrl(localStorage.getItem(API_URL_STORAGE_KEY));
   if (!stored) return fallback;
   if (IS_DEV && stored === DEFAULT_API_BASE_URL && fallback === DEV_API_PROXY_BASE_URL) return fallback;
-  if (isLocalhostUrl(stored)) return fallback;
+  if (!isAllowedApiBaseUrl(stored)) return fallback;
   return stored;
+}
+
+function normalizeApiPath(path) {
+  const raw = String(path || '').trim();
+  if (!raw) return '/';
+  return raw.startsWith('/') ? raw : `/${raw}`;
+}
+
+function buildApiUrl(baseUrl, path) {
+  const base = normalizeBaseUrl(baseUrl);
+  const endpoint = normalizeApiPath(path);
+  if (!base) return endpoint;
+  return `${base}${endpoint}`;
+}
+
+function apiDebugLog(event, payload = {}) {
+  console.info(`[nfse-api] ${event}`, payload);
+}
+
+function apiDebugError(event, payload = {}) {
+  console.error(`[nfse-api] ${event}`, payload);
+}
+
+function serializeApiError(error) {
+  return {
+    name: error?.name,
+    message: error?.message,
+    stack: error?.stack,
+    cause: error?.cause,
+    raw: error,
+  };
 }
 
 function normalizeStoredGroupId(value) {
@@ -703,6 +757,8 @@ async function api(baseUrl, path, opts = {}) {
   const method = (opts.method || 'GET').toUpperCase();
   const headers = new Headers(opts.headers || {});
   const req = { method, headers, signal: opts.signal };
+  const endpoint = normalizeApiPath(path);
+  const requestUrl = buildApiUrl(baseUrl, endpoint);
   const timeoutMs = Number(opts.timeoutMs);
   const timeoutMessage = opts.timeoutMessage || 'Tempo limite excedido. Tente novamente.';
   let timeoutId = null;
@@ -740,14 +796,15 @@ async function api(baseUrl, path, opts = {}) {
     req.body = JSON.stringify(opts.body);
   }
   const isCacheable = method === 'GET' && !req.body && opts.cache !== 'no-store';
-  const key = isCacheable ? apiCacheKey(baseUrl, path) : '';
+  const key = isCacheable ? apiCacheKey(normalizeBaseUrl(baseUrl), endpoint) : '';
   const ttl = Number.isFinite(opts.cacheTtl) ? opts.cacheTtl : API_CACHE_TTL_MS;
 
   if (isCacheable) {
     const cached = readApiCache(key, ttl);
     if (cached !== null) {
       devLog('cache hit', {
-        endpoint: path,
+        endpoint,
+        url: requestUrl,
         items: extractResponseList(cached).length,
         total: extractResponseTotal(cached, extractResponseList(cached).length),
       });
@@ -755,7 +812,7 @@ async function api(baseUrl, path, opts = {}) {
       return cached;
     }
     if (apiPendingRequests.has(key)) {
-      devLog('pending request reused', { endpoint: path });
+      devLog('pending request reused', { endpoint, url: requestUrl });
       cleanupRequest();
       return apiPendingRequests.get(key);
     }
@@ -764,16 +821,30 @@ async function api(baseUrl, path, opts = {}) {
   if (!isCacheable) clearApiCache();
 
   const request = (async () => {
-    devLog('request', { method, endpoint: path, cache: isCacheable ? 'default' : 'no-store' });
+    apiDebugLog('request', {
+      baseUrl: normalizeBaseUrl(baseUrl),
+      endpoint,
+      url: requestUrl,
+      method,
+      cache: isCacheable ? 'default' : 'no-store',
+    });
     try {
-      const res = await fetch(`${baseUrl}${path}`, req);
+      const res = await fetch(requestUrl, req);
+      apiDebugLog('response status', {
+        baseUrl: normalizeBaseUrl(baseUrl),
+        endpoint,
+        url: requestUrl,
+        status: res.status,
+        ok: res.ok,
+      });
       const txt = await res.text();
       let data;
       try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
       if (!res.ok) throw new Error(data?.detail || data?.message || txt || `HTTP ${res.status}`);
       const responseItems = extractResponseList(data);
-      devLog('response', {
-        endpoint: path,
+      apiDebugLog('response parsed', {
+        endpoint,
+        url: requestUrl,
         status: res.status,
         items: responseItems.length,
         total: extractResponseTotal(data, responseItems.length),
@@ -781,6 +852,13 @@ async function api(baseUrl, path, opts = {}) {
       if (isCacheable) writeApiCache(key, data);
       return data;
     } catch (e) {
+      apiDebugError('request failed', {
+        baseUrl: normalizeBaseUrl(baseUrl),
+        endpoint,
+        url: requestUrl,
+        method,
+        error: serializeApiError(e),
+      });
       if (timedOut) throw new Error(timeoutMessage);
       throw e;
     } finally {
@@ -802,9 +880,23 @@ function prefetchApi(baseUrl, path, opts = {}) {
 }
 
 async function fetchProcessFileBlob(baseUrl, processId, arquivoId) {
-  const res = await fetch(`${baseUrl}/processos/${processId}/arquivos/${arquivoId}/download`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.blob();
+  const endpoint = `/processos/${processId}/arquivos/${arquivoId}/download`;
+  const url = buildApiUrl(baseUrl, endpoint);
+  apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url, method: 'GET' });
+  try {
+    const res = await fetch(url);
+    apiDebugLog('download response status', { endpoint, url, status: res.status, ok: res.ok });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.blob();
+  } catch (e) {
+    apiDebugError('download failed', {
+      baseUrl: normalizeBaseUrl(baseUrl),
+      endpoint,
+      url,
+      error: serializeApiError(e),
+    });
+    throw e;
+  }
 }
 
 function downloadBrowserBlob(blob, filename) {
@@ -2892,7 +2984,11 @@ function ProcessoModal({ selected, baseUrl, toast, onClose, extraActions = null 
       const totalArqs = (pdfs?.length||0) + (xmls?.length||0) + (planilhas?.length||0);
       setDlZipProgress(`Baixando ${totalArqs} arquivo${totalArqs!==1?'s':''}...`);
 
-      const res = await fetch(`${baseUrl}/processos/${proc.id}/download-zip`);
+      const endpoint = `/processos/${proc.id}/download-zip`;
+      const requestUrl = buildApiUrl(baseUrl, endpoint);
+      apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url: requestUrl, method: 'GET' });
+      const res = await fetch(requestUrl);
+      apiDebugLog('download response status', { endpoint, url: requestUrl, status: res.status, ok: res.ok });
       if (!res.ok) throw new Error('Erro ao gerar ZIP');
 
       setDlZipProgress('Empacotando ZIP...');
@@ -2907,7 +3003,10 @@ function ProcessoModal({ selected, baseUrl, toast, onClose, extraActions = null 
       a.click();
       URL.revokeObjectURL(url);
       toast(`ZIP baixado com sucesso (${sizeMB} MB)`, 'success');
-    } catch(e) { toast(e.message, 'error'); } finally {
+    } catch(e) {
+      apiDebugError('download failed', { endpoint: `/processos/${proc.id}/download-zip`, error: serializeApiError(e) });
+      toast(e.message, 'error');
+    } finally {
       setDlZip(false);
       setDlZipProgress('');
     }
@@ -2916,7 +3015,11 @@ function ProcessoModal({ selected, baseUrl, toast, onClose, extraActions = null 
   const handleCsv = async () => {
     setDlCsv(true);
     try {
-      const res = await fetch(`${baseUrl}/processos/${proc.id}/relatorio-csv`);
+      const endpoint = `/processos/${proc.id}/relatorio-csv`;
+      const requestUrl = buildApiUrl(baseUrl, endpoint);
+      apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url: requestUrl, method: 'GET' });
+      const res = await fetch(requestUrl);
+      apiDebugLog('download response status', { endpoint, url: requestUrl, status: res.status, ok: res.ok });
       if (!res.ok) throw new Error('Erro ao gerar CSV');
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -2925,7 +3028,10 @@ function ProcessoModal({ selected, baseUrl, toast, onClose, extraActions = null 
       a.download = `relatorio_${proc.id.slice(0,8)}.csv`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch(e) { toast(e.message, 'error'); } finally { setDlCsv(false); }
+    } catch(e) {
+      apiDebugError('download failed', { endpoint: `/processos/${proc.id}/relatorio-csv`, error: serializeApiError(e) });
+      toast(e.message, 'error');
+    } finally { setDlCsv(false); }
   };
 
   const totalArquivos = (pdfs?.length || 0) + (xmls?.length || 0) + (planilhas?.length || 0);
@@ -3999,7 +4105,11 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
       });
 
       const query = appendGroupParam(`/nfse/exportar-fila-detalhada${q.toString() ? `?${q.toString()}` : ''}`, grupos, grupoAtual).split('?')[1] || '';
-      const res = await fetch(`${baseUrl}/nfse/exportar-fila-detalhada${query ? `?${query}` : ''}`);
+      const endpoint = `/nfse/exportar-fila-detalhada${query ? `?${query}` : ''}`;
+      const url = buildApiUrl(baseUrl, endpoint);
+      apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url, method: 'GET' });
+      const res = await fetch(url);
+      apiDebugLog('download response status', { endpoint, url, status: res.status, ok: res.ok });
       if (!res.ok) {
         let message = `HTTP ${res.status}`;
         const text = await res.text();
@@ -4017,6 +4127,10 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
       const blob = await res.blob();
       downloadBrowserBlob(blob, 'fila_detalhada.xlsx');
     } catch (e) {
+      apiDebugError('download failed', {
+        endpoint: '/nfse/exportar-fila-detalhada',
+        error: serializeApiError(e),
+      });
       toast(e.message, 'error');
     }
   };
@@ -5472,8 +5586,8 @@ function ConfiguracoesPage({ baseUrl, setBaseUrl, toast }) {
   const ping = async () => {
     setPinging(true); setPingRes(null);
     const cleanedUrl = normalizeBaseUrl(url);
-    if (!isHttpUrl(cleanedUrl)) {
-      const msg = 'Informe uma URL válida iniciando com http:// ou https://.';
+    if (!isHttpsUrl(cleanedUrl)) {
+      const msg = 'Informe uma URL válida iniciando com https://.';
       setPingRes({ ok: false, msg });
       toast(msg, 'error');
       setPinging(false);
@@ -5481,6 +5595,13 @@ function ConfiguracoesPage({ baseUrl, setBaseUrl, toast }) {
     }
     if (isLocalhostUrl(cleanedUrl)) {
       const msg = 'URL local (localhost/127.0.0.1) não é permitida no portal publicado.';
+      setPingRes({ ok: false, msg });
+      toast(msg, 'error');
+      setPinging(false);
+      return;
+    }
+    if (isRailwayInternalUrl(cleanedUrl)) {
+      const msg = 'URL interna do Railway não é acessível pelo navegador. Use o domínio público https://*.up.railway.app.';
       setPingRes({ ok: false, msg });
       toast(msg, 'error');
       setPinging(false);

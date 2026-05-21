@@ -45,7 +45,7 @@ const GROUP_OPTIONS = [
   { key: 'marox', label: 'Grupo Marox', match: 'MAROX' },
 ];
 
-const RAILWAY_API_BASE_URL = 'https://web-production-62f13.up.railway.app';
+const RAILWAY_API_BASE_URL = 'https://backeend-production-5a65.up.railway.app';
 const DEFAULT_API_BASE_URL = normalizeBaseUrl(RAILWAY_API_BASE_URL);
 
 const DEFAULT_API_URL = resolveDefaultApiUrl();
@@ -59,7 +59,7 @@ function readViteApiBaseUrl() {
 function resolveDefaultApiUrl() {
   const viteUrl = normalizeBaseUrl(readViteApiBaseUrl());
   if (viteUrl) return viteUrl;
-  return normalizeBaseUrl(window.__APP_CONFIG__?.API_BASE_URL || '');
+  return normalizeBaseUrl(window.__APP_CONFIG__?.API_BASE_URL || DEFAULT_API_BASE_URL);
 }
 
 
@@ -85,10 +85,30 @@ function isLocalhostUrl(url) {
   }
 }
 
-function isHttpUrl(url) {
+function isHttpsUrl(url) {
   try {
     const u = new URL(url);
-    return u.protocol === 'http:' || u.protocol === 'https:';
+    return u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function isRailwayInternalUrl(url) {
+  try {
+    const u = new URL(url);
+    const host = String(u.hostname || '').toLowerCase();
+    return host === 'backeend.railway.internal' || host.endsWith('.railway.internal');
+  } catch {
+    return false;
+  }
+}
+
+function isKnownDeadApiBaseUrl(url) {
+  try {
+    const u = new URL(url);
+    const host = String(u.hostname || '').toLowerCase();
+    return host === 'web-production-62f13.up.railway.app';
   } catch {
     return false;
   }
@@ -96,7 +116,11 @@ function isHttpUrl(url) {
 
 function isAllowedApiBaseUrl(url) {
   const normalized = normalizeBaseUrl(url);
-  return !!normalized && isHttpUrl(normalized) && !isLocalhostUrl(normalized);
+  return !!normalized
+    && isHttpsUrl(normalized)
+    && !isLocalhostUrl(normalized)
+    && !isRailwayInternalUrl(normalized)
+    && !isKnownDeadApiBaseUrl(normalized);
 }
 
 function resolveApiBaseUrl() {
@@ -106,7 +130,7 @@ function resolveApiBaseUrl() {
   const fallback = DEFAULT_API_URL;
   const stored = normalizeBaseUrl(localStorage.getItem(API_URL_STORAGE_KEY));
   if (!stored) return fallback;
-  if (isLocalhostUrl(stored)) return fallback;
+  if (!isAllowedApiBaseUrl(stored)) return fallback;
   return stored;
 }
 
@@ -4714,8 +4738,8 @@ function ConfiguracoesPage({ baseUrl, setBaseUrl, toast }) {
   const ping = async () => {
     setPinging(true); setPingRes(null);
     const cleanedUrl = normalizeBaseUrl(url);
-    if (!isHttpUrl(cleanedUrl)) {
-      const msg = 'Informe uma URL válida iniciando com http:// ou https://.';
+    if (!isHttpsUrl(cleanedUrl)) {
+      const msg = 'Informe uma URL valida iniciando com https://.';
       setPingRes({ ok: false, msg });
       toast(msg, 'error');
       setPinging(false);
@@ -4723,6 +4747,13 @@ function ConfiguracoesPage({ baseUrl, setBaseUrl, toast }) {
     }
     if (isLocalhostUrl(cleanedUrl)) {
       const msg = 'URL local (localhost/127.0.0.1) não é permitida no portal publicado.';
+      setPingRes({ ok: false, msg });
+      toast(msg, 'error');
+      setPinging(false);
+      return;
+    }
+    if (isRailwayInternalUrl(cleanedUrl)) {
+      const msg = 'URL interna do Railway nao e acessivel pelo navegador. Use o dominio publico https://*.up.railway.app.';
       setPingRes({ ok: false, msg });
       toast(msg, 'error');
       setPinging(false);
