@@ -1302,10 +1302,10 @@ function QueueMultiSelectFilter({ options = [], selected = [], onChange }) {
           />
           <div className="queue-multiselect-actions">
             <button type="button" className="btn btn-ghost btn-xs" disabled={!options.length} onClick={() => onChange([...options])}>
-              Selecionar todos
+              Selecionar tudo
             </button>
             <button type="button" className="btn btn-ghost btn-xs" disabled={!selectedValues.length} onClick={() => onChange([])}>
-              Limpar todos
+              Limpar selecao
             </button>
           </div>
           <div className="queue-multiselect-list">
@@ -2435,7 +2435,7 @@ function ExecucaoPage({ baseUrl, toast, grupoAtual, grupos }) {
                   <div className="field" style={{ maxWidth: 180 }}>
                     <label className="label">Horário de execução diária</label>
                     <input type="time" className="input" value={form.hora_execucao} onChange={e => f('hora_execucao', e.target.value)} />
-                    <span className="input-hint">A execução ocorrerá todos os dias neste horário</span>
+                    <span className="input-hint">A execucao ocorrera diariamente neste horario</span>
                   </div>
                   <div className="field" style={{ maxWidth: 220 }}>
                     <label className="label">Atualizar últimos X dias</label>
