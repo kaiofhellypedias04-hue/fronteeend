@@ -58,18 +58,8 @@ const MENU = [
 
 const API_URL_STORAGE_KEY = 'nfse_url';
 const GROUP_ID_STORAGE_KEY = 'grupo_id_atual';
-const GROUP_STORAGE_KEY = 'grupo_atual';
-const ALL_GROUP_ID = 'todos';
-
-// Grupos reais vem de GET /grupos; estes valores sao fallback temporario.
-const ALL_GROUP_OPTION = { id: ALL_GROUP_ID, label: 'Todos', all: true, legacy: false };
-
-// Fallback temporario para ambientes onde GET /grupos ainda nao esta disponivel.
-const LEGACY_GROUP_OPTIONS = [
-  { id: ALL_GROUP_ID, key: ALL_GROUP_ID, label: 'Todos', match: '', all: true, legacy: true },
-  { id: 'legacy:canopus', key: 'canopus', label: 'Grupo Canopus', match: 'CANOPUS', legacy: true },
-  { id: 'legacy:marox', key: 'marox', label: 'Grupo Marox', match: 'MAROX', legacy: true },
-];
+const GROUP_LABEL_STORAGE_KEY = 'grupo_nome_atual';
+const GROUP_SLUG_STORAGE_KEY = 'grupo_slug_atual';
 
 const RAILWAY_API_BASE_URL = 'https://backeend-production-5a65.up.railway.app';
 const DEV_API_PROXY_BASE_URL = '/api';
@@ -201,12 +191,7 @@ function normalizeStoredGroupId(value) {
 
 function readCurrentGroup() {
   const storedId = normalizeStoredGroupId(localStorage.getItem(GROUP_ID_STORAGE_KEY));
-  if (storedId) return storedId;
-  const legacyKey = String(localStorage.getItem(GROUP_STORAGE_KEY) || '').trim().toLowerCase();
-  if (!legacyKey) return '';
-  if (legacyKey === ALL_GROUP_ID) return ALL_GROUP_ID;
-  const legacy = LEGACY_GROUP_OPTIONS.find(group => group.key === legacyKey);
-  return legacy?.id || '';
+  return storedId;
 }
 
 function normalizeBackendGroup(raw) {
@@ -227,9 +212,8 @@ function normalizeBackendGroup(raw) {
     id,
     grupo_id: id,
     label: label || id,
+    slug: String(firstDefinedValue(raw.slug, raw.key, raw.codigo, id) ?? id).trim(),
     certCount: Number.isFinite(certCount) ? certCount : null,
-    all: false,
-    legacy: false,
   };
 }
 
@@ -237,7 +221,7 @@ function normalizeGroupsPayload(payload) {
   const groups = extractResponseList(payload, ['grupos', 'items', 'data', 'results', 'rows'])
     .map(normalizeBackendGroup)
     .filter(Boolean);
-  return [ALL_GROUP_OPTION, ...groups];
+  return groups;
 }
 
 function findGroupMeta(groups, groupId) {
@@ -251,13 +235,13 @@ function getGroupLabel(groups, groupId) {
 
 function selectedBackendGroupId(groups, groupId) {
   const group = findGroupMeta(groups, groupId);
-  if (!group || group.all || group.legacy) return '';
+  if (!group) return '';
   return group.grupo_id || group.id;
 }
 
 function appendGroupParam(path, groups, groupId) {
   const selectedId = selectedBackendGroupId(groups, groupId);
-  if (!selectedId) return path;
+  if (!selectedId) throw new Error('Selecione um grupo para continuar.');
   const [pathname, query = ''] = String(path || '').split('?');
   const q = new URLSearchParams(query);
   q.set('grupo_id', selectedId);
@@ -267,55 +251,21 @@ function appendGroupParam(path, groups, groupId) {
 
 function groupQueryEntries(groups, groupId) {
   const selectedId = selectedBackendGroupId(groups, groupId);
-  return selectedId ? { grupo_id: selectedId } : {};
+  if (!selectedId) throw new Error('Selecione um grupo para continuar.');
+  return { grupo_id: selectedId };
 }
 
-async function apiWithGroupFallback(baseUrl, path, groups, groupId, opts = {}) {
+async function apiWithGroup(baseUrl, path, groups, groupId, opts = {}) {
   const groupedPath = appendGroupParam(path, groups, groupId);
-  if (groupedPath === path) return api(baseUrl, path, opts);
-  try {
-    return await api(baseUrl, groupedPath, opts);
-  } catch (e) {
-    devLog('group param fallback', { endpoint: groupedPath, fallback: path, message: e.message });
-    return api(baseUrl, path, { ...opts, cache: 'no-store' });
-  }
-}
-
-function isLegacyGroupMode(groups, groupId) {
-  const group = findGroupMeta(groups, groupId);
-  return !!group?.legacy && !!group.match;
-}
-
-function legacyPertenceAoGrupo(certAlias, groups, groupId) {
-  const group = findGroupMeta(groups, groupId);
-  if (!group?.legacy || !group.match) return true;
-  return String(certAlias || '').toUpperCase().includes(group.match);
-}
-
-function filterLegacyGroupItems(items, groups, groupId, getAlias = item => item?.alias) {
-  const list = Array.isArray(items) ? items : [];
-  if (!isLegacyGroupMode(groups, groupId)) return list;
-  return list.filter(item => legacyPertenceAoGrupo(getAlias(item), groups, groupId));
+  return api(baseUrl, groupedPath, opts);
 }
 
 function groupHasNoCertificates(group) {
-  return !!group && !group.all && !group.legacy && group.certCount === 0;
+  return !!group && group.certCount === 0;
 }
 
 function devLog(label, details = {}) {
   if (IS_DEV) console.info(`[nfse-debug] ${label}`, details);
-}
-
-function dashboardItemPertenceAoGrupo(item, groups, groupId) {
-  if (!isLegacyGroupMode(groups, groupId)) return true;
-  // Usado apenas no fallback legado quando GET /grupos falha.
-  return [item?.cert_alias, item?.client_name, item?.empresa, item?.nome, item?.alias]
-    .some(value => String(value || '').trim() && legacyPertenceAoGrupo(value, groups, groupId));
-}
-
-function filterDashboardGroupItems(items, groups, groupId) {
-  const list = Array.isArray(items) ? items : [];
-  return list.filter(item => dashboardItemPertenceAoGrupo(item, groups, groupId));
 }
 
 function memoizeFormatter(fn, maxEntries = 300) {
@@ -879,8 +829,8 @@ function prefetchApi(baseUrl, path, opts = {}) {
   return api(baseUrl, path, { ...opts, cacheTtl: opts.cacheTtl ?? 120_000 }).catch(() => null);
 }
 
-async function fetchProcessFileBlob(baseUrl, processId, arquivoId) {
-  const endpoint = `/processos/${processId}/arquivos/${arquivoId}/download`;
+async function fetchProcessFileBlob(baseUrl, processId, arquivoId, grupos = [], grupoAtual = '') {
+  const endpoint = appendGroupParam(`/processos/${processId}/arquivos/${arquivoId}/download`, grupos, grupoAtual);
   const url = buildApiUrl(baseUrl, endpoint);
   apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url, method: 'GET' });
   try {
@@ -938,13 +888,13 @@ async function downloadResolvedUrl(url, filename) {
   }
 }
 
-async function downloadBlob(baseUrl, processId, arquivoId, filename) {
-  const blob = await fetchProcessFileBlob(baseUrl, processId, arquivoId);
+async function downloadBlob(baseUrl, processId, arquivoId, filename, grupos = [], grupoAtual = '') {
+  const blob = await fetchProcessFileBlob(baseUrl, processId, arquivoId, grupos, grupoAtual);
   downloadBrowserBlob(blob, filename);
 }
 
-async function openProcessFile(baseUrl, processId, arquivoId) {
-  const blob = await fetchProcessFileBlob(baseUrl, processId, arquivoId);
+async function openProcessFile(baseUrl, processId, arquivoId, grupos = [], grupoAtual = '') {
+  const blob = await fetchProcessFileBlob(baseUrl, processId, arquivoId, grupos, grupoAtual);
   const url = URL.createObjectURL(blob);
   const popup = window.open(url, '_blank', 'noopener,noreferrer');
   if (!popup) {
@@ -1325,7 +1275,7 @@ function QueueMultiSelectFilter({ options = [], selected = [], onChange }) {
     return options.filter(option => normFilterValue(option).includes(term));
   }, [options, search]);
   const summary = selectedValues.length === 0
-    ? 'Todas'
+    ? 'Qualquer incidencia'
     : selectedValues.length === 1
       ? selectedValues[0]
       : `${selectedValues.length} selecionadas`;
@@ -1424,13 +1374,17 @@ function buildQueueSearchParams({ page = 1, pageSize = DEFAULT_QUEUE_PAGE_SIZE, 
   return q;
 }
 
-function prefetchDefaultQueue(baseUrl, groups = [], groupId = ALL_GROUP_ID) {
+function prefetchDefaultQueue(baseUrl, groups = [], groupId = '') {
   const q = buildQueueSearchParams({
     page: 1,
     pageSize: DEFAULT_QUEUE_PAGE_SIZE,
     filters: getQueueDefaultFilters(),
   });
-  return prefetchApi(baseUrl, appendGroupParam(`/nfse?${q.toString()}`, groups, groupId), { cacheTtl: CRITICAL_LIST_CACHE_TTL_MS });
+  try {
+    return prefetchApi(baseUrl, appendGroupParam(`/nfse?${q.toString()}`, groups, groupId), { cacheTtl: CRITICAL_LIST_CACHE_TTL_MS });
+  } catch {
+    return Promise.resolve(null);
+  }
 }
 
 function getQueueIssIncidenceValue(item) {
@@ -1574,23 +1528,24 @@ function resolveNoteDocuments(baseUrl, payload) {
   return { xml, pdf };
 }
 
-function QueueNoteDocuments({ baseUrl, selected, toast }) {
+function QueueNoteDocuments({ baseUrl, selected, toast, grupos, grupoAtual }) {
   const [pendingAction, setPendingAction] = useState('');
   const noteId = selected?.id;
   const cachedDocuments = useMemo(() => {
     if (!noteId) return null;
-    const cached = readApiCache(apiCacheKey(baseUrl, `/nfse/${noteId}/documentos`), 180_000);
+    const docsPath = appendGroupParam(`/nfse/${noteId}/documentos`, grupos, grupoAtual);
+    const cached = readApiCache(apiCacheKey(baseUrl, docsPath), 180_000);
     return cached ? resolveNoteDocuments(baseUrl, cached) : null;
-  }, [baseUrl, noteId]);
+  }, [baseUrl, noteId, grupos, grupoAtual]);
   const docsData = useAsync(signal => {
     if (!noteId) return Promise.resolve({ xml: null, pdf: null });
-    return api(baseUrl, `/nfse/${noteId}/documentos`, {
+    return apiWithGroup(baseUrl, `/nfse/${noteId}/documentos`, grupos, grupoAtual, {
       signal,
       cacheTtl: 180_000,
       timeoutMs: 10_000,
       timeoutMessage: 'Não foi possível carregar documentos agora. Tentar novamente.',
     }).then(data => resolveNoteDocuments(baseUrl, data));
-  }, [baseUrl, noteId]);
+  }, [baseUrl, noteId, grupos, grupoAtual]);
 
   const documents = docsData.data || cachedDocuments;
   const pdfFile = documents?.pdf || null;
@@ -1606,8 +1561,8 @@ function QueueNoteDocuments({ baseUrl, selected, toast }) {
         if (mode === 'view') openUrlInNewTab(file.viewUrl || file.url);
         else await downloadResolvedUrl(file.downloadUrl || file.url, file.name || `${kind}.bin`);
       } else if (file.processId && file.fileId) {
-        if (mode === 'view') await openProcessFile(baseUrl, file.processId, file.fileId);
-        else await downloadBlob(baseUrl, file.processId, file.fileId, file.name || `${kind}.bin`);
+        if (mode === 'view') await openProcessFile(baseUrl, file.processId, file.fileId, grupos, grupoAtual);
+        else await downloadBlob(baseUrl, file.processId, file.fileId, file.name || `${kind}.bin`, grupos, grupoAtual);
       }
     } catch (e) {
       toast(e.message, 'error');
@@ -1672,6 +1627,7 @@ function QueueNoteDocuments({ baseUrl, selected, toast }) {
 
 function QueueAnalysisContent({
   selected, alertMeta, tributosComparativo, baseUrl, toast,
+  grupos, grupoAtual,
   statusFila, setStatusFila, prioridadeFila, setPrioridadeFila,
   responsavelFila, setResponsavelFila, obsInterna, setObsInterna,
   salvarObservacao, savingObs,
@@ -1749,7 +1705,7 @@ function QueueAnalysisContent({
         </div>
       </div>
 
-      <QueueNoteDocuments baseUrl={baseUrl} selected={selected} toast={toast} />
+      <QueueNoteDocuments baseUrl={baseUrl} selected={selected} toast={toast} grupos={grupos} grupoAtual={grupoAtual} />
 
       <div className="queue-detail-block">
         <div className="card-title" style={{ marginBottom: 12 }}>Comparativo de tributos</div>
@@ -1872,7 +1828,7 @@ function DashboardTableFooter({ shown, total, loading, onOpen }) {
       <span>Mostrando {safeShown} de {safeTotal}</span>
       <button className="btn btn-ghost btn-sm" onClick={onOpen} disabled={loading}>
         {loading ? <Spinner size={13} /> : null}
-        Ver todos
+        Abrir lista
       </button>
     </div>
   );
@@ -1957,9 +1913,9 @@ function DashboardProcessesTable({ items, repeatLoadingId, onRepeat, showActions
 // ── Page: Dashboard ──────────────────────────────────────────
 function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
   const health  = useAsync(signal => api(baseUrl, '/health', { signal }), [baseUrl]);
-  const execs   = useAsync(signal => apiWithGroupFallback(baseUrl, '/execucoes?page=1&page_size=6', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
-  const procs   = useAsync(signal => apiWithGroupFallback(baseUrl, '/processos?page=1&page_size=6', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
-  const agends  = useAsync(signal => apiWithGroupFallback(baseUrl, '/agendamentos', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
+  const execs   = useAsync(signal => apiWithGroup(baseUrl, '/execucoes?page=1&page_size=6', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
+  const procs   = useAsync(signal => apiWithGroup(baseUrl, '/processos?page=1&page_size=6', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
+  const agends  = useAsync(signal => apiWithGroup(baseUrl, '/agendamentos', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
   const [execModalOpen, setExecModalOpen] = useState(false);
   const [execModalPage, setExecModalPage] = useState(1);
   const [execModalPageSize, setExecModalPageSize] = useState(25);
@@ -1971,43 +1927,29 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
   const [repeatSuccess, setRepeatSuccess] = useState('');
   const fullExecs = useAsync(signal => {
     if (!execModalOpen) return Promise.resolve({ items: [], total: 0 });
-    return apiWithGroupFallback(baseUrl, `/execucoes?page=${execModalPage}&page_size=${execModalPageSize}`, grupos, grupoAtual, { signal });
+    return apiWithGroup(baseUrl, `/execucoes?page=${execModalPage}&page_size=${execModalPageSize}`, grupos, grupoAtual, { signal });
   }, [baseUrl, execModalOpen, execModalPage, execModalPageSize, grupos, grupoAtual]);
   const fullProcs = useAsync(signal => {
     if (!procModalOpen) return Promise.resolve({ items: [], total: 0 });
-    return apiWithGroupFallback(baseUrl, `/processos?page=${procModalPage}&page_size=${procModalPageSize}`, grupos, grupoAtual, { signal });
+    return apiWithGroup(baseUrl, `/processos?page=${procModalPage}&page_size=${procModalPageSize}`, grupos, grupoAtual, { signal });
   }, [baseUrl, procModalOpen, procModalPage, procModalPageSize, grupos, grupoAtual]);
 
-  const groupFilterActive = !!selectedBackendGroupId(grupos, grupoAtual) || isLegacyGroupMode(grupos, grupoAtual);
-  const legacyGroupFilterActive = isLegacyGroupMode(grupos, grupoAtual);
-  const recentExecutions = useMemo(
-    () => filterDashboardGroupItems(execs.data?.items, grupos, grupoAtual),
-    [execs.data?.items, grupos, grupoAtual]
-  );
-  const recentProcesses = useMemo(
-    () => filterDashboardGroupItems(procs.data?.items, grupos, grupoAtual),
-    [procs.data?.items, grupos, grupoAtual]
-  );
-  const fullExecItems = useMemo(
-    () => filterDashboardGroupItems(fullExecs.data?.items, grupos, grupoAtual),
-    [fullExecs.data?.items, grupos, grupoAtual]
-  );
-  const fullProcItems = useMemo(
-    () => filterDashboardGroupItems(fullProcs.data?.items, grupos, grupoAtual),
-    [fullProcs.data?.items, grupos, grupoAtual]
-  );
+  const recentExecutions = useMemo(() => extractResponseList(execs.data), [execs.data]);
+  const recentProcesses = useMemo(() => extractResponseList(procs.data), [procs.data]);
+  const fullExecItems = useMemo(() => extractResponseList(fullExecs.data), [fullExecs.data]);
+  const fullProcItems = useMemo(() => extractResponseList(fullProcs.data), [fullProcs.data]);
 
   const stats = useMemo(() => ({
     status:    health.data?.status || 'offline',
-    execucoes: legacyGroupFilterActive ? recentExecutions.length : execs.data?.total || 0,
-    processos: legacyGroupFilterActive ? recentProcesses.length : procs.data?.total || 0,
+    execucoes: execs.data?.total || recentExecutions.length,
+    processos: procs.data?.total || recentProcesses.length,
     jobs:      agends.data?.jobs?.filter(j => j.running || j.ativo)?.length || 0,
-  }), [health.data, execs.data?.total, procs.data?.total, agends.data, legacyGroupFilterActive, recentExecutions.length, recentProcesses.length]);
+  }), [health.data, execs.data?.total, procs.data?.total, agends.data, recentExecutions.length, recentProcesses.length]);
 
   const isRefreshing = health.loading || execs.loading || procs.loading || agends.loading;
   const apiOnline = stats.status === 'ok';
-  const recentExecutionsTotal = legacyGroupFilterActive ? recentExecutions.length : execs.data?.total;
-  const recentProcessesTotal = legacyGroupFilterActive ? recentProcesses.length : procs.data?.total;
+  const recentExecutionsTotal = execs.data?.total || recentExecutions.length;
+  const recentProcessesTotal = procs.data?.total || recentProcesses.length;
   const recentStatusesNeedingAttention = [...recentExecutions, ...recentProcesses]
     .map(item => normalizeProcessStatus(item?.status))
     .filter(status => status === 'failed' || status === 'queued');
@@ -2048,7 +1990,7 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
     setRepeatError('');
     setRepeatSuccess('');
     try {
-      await api(baseUrl, `/processos/${id}/repetir`, { method: 'POST' });
+      await apiWithGroup(baseUrl, `/processos/${id}/repetir`, grupos, grupoAtual, { method: 'POST' });
       const message = 'Processo adicionado novamente à fila';
       setRepeatSuccess(message);
       toast(message, 'success');
@@ -2298,7 +2240,7 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
         </div>
       </div>
 
-      <Modal open={execModalOpen} title="Todas as execucoes" onClose={() => setExecModalOpen(false)} xl>
+      <Modal open={execModalOpen} title="Execucoes recentes" onClose={() => setExecModalOpen(false)} xl>
         {fullExecs.error ? <Alert type="error">{fullExecs.error}</Alert> : null}
         {fullExecs.loading ? (
           <div style={{ padding: 20 }}><Loading /></div>
@@ -2318,7 +2260,7 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
         )}
       </Modal>
 
-      <Modal open={procModalOpen} title="Todos os processos recentes" onClose={() => setProcModalOpen(false)} xl>
+      <Modal open={procModalOpen} title="Processos recentes" onClose={() => setProcModalOpen(false)} xl>
         {repeatSuccess ? <Alert type="success">{repeatSuccess}</Alert> : null}
         {repeatError ? <Alert type="error">{repeatError}</Alert> : null}
         {fullProcs.error ? <Alert type="error">{fullProcs.error}</Alert> : null}
@@ -2350,11 +2292,9 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
 
 // ── Page: Execução ───────────────────────────────────────────
 function ExecucaoPage({ baseUrl, toast, grupoAtual, grupos }) {
-  const [showAllGroups, setShowAllGroups] = useState(false);
-  const effectiveGroupId = showAllGroups ? ALL_GROUP_ID : grupoAtual;
   const selectedGroup = findGroupMeta(grupos, grupoAtual);
-  const certs = useAsync(signal => apiWithGroupFallback(baseUrl, '/certificados', grupos, effectiveGroupId, { signal }), [baseUrl, grupos, effectiveGroupId]);
-  const creds = useAsync(signal => apiWithGroupFallback(baseUrl, '/credenciais', grupos, effectiveGroupId, { signal }), [baseUrl, grupos, effectiveGroupId]);
+  const certs = useAsync(signal => apiWithGroup(baseUrl, '/certificados', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
+  const creds = useAsync(signal => apiWithGroup(baseUrl, '/credenciais', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
 
   const [form, setForm] = useState(() => {
     const saved = localStorage.getItem('nfse_last_dir') || './saida';
@@ -2393,11 +2333,8 @@ function ExecucaoPage({ baseUrl, toast, grupoAtual, grupos }) {
   const listaCompleta = isCred
     ? (creds.data?.credenciais || [])
     : (certs.data?.certificados || []);
-  const lista = useMemo(
-    () => filterLegacyGroupItems(listaCompleta, grupos, effectiveGroupId),
-    [listaCompleta, grupos, effectiveGroupId]
-  );
-  const groupEmptyMessage = groupHasNoCertificates(selectedGroup) && !isCred && !showAllGroups;
+  const lista = listaCompleta;
+  const groupEmptyMessage = groupHasNoCertificates(selectedGroup) && !isCred;
 
   const toggle = alias => setForm(f => ({
     ...f,
@@ -2421,7 +2358,7 @@ function ExecucaoPage({ baseUrl, toast, grupoAtual, grupos }) {
       const lookbackDays = Number(form.lookback_days);
       const payload = {
         ...form,
-        ...groupQueryEntries(grupos, effectiveGroupId),
+        ...groupQueryEntries(grupos, grupoAtual),
         lookback_days: lookbackDays,
         use_chunk_days: !!form.use_chunk_days,
         chunk_days: chunkDays,
@@ -2441,10 +2378,6 @@ function ExecucaoPage({ baseUrl, toast, grupoAtual, grupos }) {
   };
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
-
-  useEffect(() => {
-    setShowAllGroups(false);
-  }, [grupoAtual]);
 
   return (
     <div className="page-enter">
@@ -2632,9 +2565,6 @@ function ExecucaoPage({ baseUrl, toast, grupoAtual, grupos }) {
                 {groupEmptyMessage ? (
                   <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
                     Este grupo nÃ£o possui certificados vinculados.
-                    <button className="btn btn-ghost btn-xs" style={{ marginLeft: 10 }} onClick={() => setShowAllGroups(true)}>
-                      Ver todos
-                    </button>
                   </div>
                 ) : lista.length === 0 && (
                   <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
@@ -2671,7 +2601,7 @@ function ExecucaoPage({ baseUrl, toast, grupoAtual, grupos }) {
 
 // ── Page: Agendamentos ───────────────────────────────────────
 function AgendamentosPage({ baseUrl, toast, grupoAtual, grupos }) {
-  const list = useAsync(signal => apiWithGroupFallback(baseUrl, '/agendamentos', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
+  const list = useAsync(signal => apiWithGroup(baseUrl, '/agendamentos', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
   const [confirm, setConfirm] = useState(null);
   const [statusId, setStatusId] = useState('');
   const [statusRes, setStatusRes] = useState(null);
@@ -2679,7 +2609,7 @@ function AgendamentosPage({ baseUrl, toast, grupoAtual, grupos }) {
 
   const cancelar = async () => {
     try {
-      await api(baseUrl, `/agendamentos/${confirm}`, { method: 'DELETE' });
+      await apiWithGroup(baseUrl, `/agendamentos/${confirm}`, grupos, grupoAtual, { method: 'DELETE' });
       toast('Agendamento cancelado.', 'success');
       setConfirm(null);
       list.reload();
@@ -2858,7 +2788,7 @@ function FolderTab({ folderIcon, label, count, active, onClick }) {
   );
 }
 
-function FileRow({ file, baseUrl, toast }) {
+function FileRow({ file, baseUrl, toast, grupos, grupoAtual }) {
   const [loading, setLoading] = React.useState(false);
   const [hovered, setHovered] = React.useState(false);
   const ext = file.nome_arquivo?.split('.').pop()?.toUpperCase() || '';
@@ -2899,7 +2829,7 @@ function FileRow({ file, baseUrl, toast }) {
   const handleDownload = async () => {
     setLoading(true);
     try {
-      await downloadBlob(baseUrl, file.processo_id, file.id, file.nome_arquivo);
+      await downloadBlob(baseUrl, file.processo_id, file.id, file.nome_arquivo, grupos, grupoAtual);
     } catch(e) {
       toast(e.message, 'error');
     } finally {
@@ -2967,7 +2897,7 @@ function FileRow({ file, baseUrl, toast }) {
   );
 }
 
-function ProcessoModal({ selected, baseUrl, toast, onClose, extraActions = null }) {
+function ProcessoModal({ selected, baseUrl, toast, onClose, grupos, grupoAtual, extraActions = null }) {
   const [tab, setTab] = React.useState('pdfs');
   const [dlZip, setDlZip] = React.useState(false);
   const [dlCsv, setDlCsv] = React.useState(false);
@@ -2984,7 +2914,7 @@ function ProcessoModal({ selected, baseUrl, toast, onClose, extraActions = null 
       const totalArqs = (pdfs?.length||0) + (xmls?.length||0) + (planilhas?.length||0);
       setDlZipProgress(`Baixando ${totalArqs} arquivo${totalArqs!==1?'s':''}...`);
 
-      const endpoint = `/processos/${proc.id}/download-zip`;
+      const endpoint = appendGroupParam(`/processos/${proc.id}/download-zip`, grupos, grupoAtual);
       const requestUrl = buildApiUrl(baseUrl, endpoint);
       apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url: requestUrl, method: 'GET' });
       const res = await fetch(requestUrl);
@@ -3015,7 +2945,7 @@ function ProcessoModal({ selected, baseUrl, toast, onClose, extraActions = null 
   const handleCsv = async () => {
     setDlCsv(true);
     try {
-      const endpoint = `/processos/${proc.id}/relatorio-csv`;
+      const endpoint = appendGroupParam(`/processos/${proc.id}/relatorio-csv`, grupos, grupoAtual);
       const requestUrl = buildApiUrl(baseUrl, endpoint);
       apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url: requestUrl, method: 'GET' });
       const res = await fetch(requestUrl);
@@ -3180,7 +3110,7 @@ function ProcessoModal({ selected, baseUrl, toast, onClose, extraActions = null 
                   <IconPastaPDF size={32} /><br/>
                   <span style={{ display: 'block', marginTop: 8 }}>Pasta vazia</span>
                 </p>
-              : pdfs.map(f => <FileRow key={f.id} file={f} baseUrl={baseUrl} toast={toast} />)
+              : pdfs.map(f => <FileRow key={f.id} file={f} baseUrl={baseUrl} toast={toast} grupos={grupos} grupoAtual={grupoAtual} />)
             }
           </div>
         )}
@@ -3193,7 +3123,7 @@ function ProcessoModal({ selected, baseUrl, toast, onClose, extraActions = null 
                   <IconPastaXML size={32} /><br/>
                   <span style={{ display: 'block', marginTop: 8 }}>Pasta vazia</span>
                 </p>
-              : xmls.map(f => <FileRow key={f.id} file={f} baseUrl={baseUrl} toast={toast} />)
+              : xmls.map(f => <FileRow key={f.id} file={f} baseUrl={baseUrl} toast={toast} grupos={grupos} grupoAtual={grupoAtual} />)
             }
           </div>
         )}
@@ -3206,7 +3136,7 @@ function ProcessoModal({ selected, baseUrl, toast, onClose, extraActions = null 
                   <IconPastaPlanilha size={32} /><br/>
                   <span style={{ display: 'block', marginTop: 8 }}>Pasta vazia</span>
                 </p>
-              : planilhas.map(f => <FileRow key={f.id} file={f} baseUrl={baseUrl} toast={toast} />)
+              : planilhas.map(f => <FileRow key={f.id} file={f} baseUrl={baseUrl} toast={toast} grupos={grupos} grupoAtual={grupoAtual} />)
             }
           </div>
         )}
@@ -3306,13 +3236,13 @@ function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
   const [confirmAction, setConfirmAction]           = useState(null);
 
   const selectedGroup = findGroupMeta(grupos, grupoAtual);
-  const allProcs = useAsync(signal => apiWithGroupFallback(baseUrl, '/processos?page=1&page_size=500', grupos, grupoAtual, { signal, cacheTtl: 60_000 }), [baseUrl, grupos, grupoAtual]);
+  const allProcs = useAsync(signal => apiWithGroup(baseUrl, '/processos?page=1&page_size=500', grupos, grupoAtual, { signal, cacheTtl: 60_000 }), [baseUrl, grupos, grupoAtual]);
 
   const procList = useAsync(signal => {
     if (!empresaSelecionada) return Promise.resolve({ items: [], total: 0 });
     const q = new URLSearchParams({ page, page_size: pageSize, cert_alias: empresaSelecionada });
     if (statusFiltro) q.set('status', statusFiltro);
-    return apiWithGroupFallback(baseUrl, `/processos?${q}`, grupos, grupoAtual, { signal });
+    return apiWithGroup(baseUrl, `/processos?${q}`, grupos, grupoAtual, { signal });
   }, [baseUrl, empresaSelecionada, page, pageSize, statusFiltro, grupos, grupoAtual]);
 
   // Agrupa por empresa com contadores
@@ -3333,9 +3263,7 @@ function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
     return Object.values(map).sort((a, b) => a.nome.localeCompare(b.nome));
   }, [allProcs.data]);
 
-  const empresasVisiveis = useMemo(() => {
-    return filterLegacyGroupItems(empresas, grupos, grupoAtual, item => item.alias);
-  }, [empresas, grupos, grupoAtual]);
+  const empresasVisiveis = empresas;
 
   const empresasFiltradas = useMemo(() => {
     const t = buscaDebounced.trim().toLowerCase();
@@ -3346,12 +3274,12 @@ function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
     setLoadingId(id);
     try {
       const [proc, pdfs, xmls, planilhas, summary, relatorio] = await Promise.allSettled([
-        api(baseUrl, `/processos/${id}`),
-        api(baseUrl, `/processos/${id}/pdfs`),
-        api(baseUrl, `/processos/${id}/xmls`),
-        api(baseUrl, `/processos/${id}/planilhas`),
-        api(baseUrl, `/processos/${id}/summary`),
-        api(baseUrl, `/processos/${id}/relatorio?page=1&page_size=30`),
+        apiWithGroup(baseUrl, `/processos/${id}`, grupos, grupoAtual),
+        apiWithGroup(baseUrl, `/processos/${id}/pdfs`, grupos, grupoAtual),
+        apiWithGroup(baseUrl, `/processos/${id}/xmls`, grupos, grupoAtual),
+        apiWithGroup(baseUrl, `/processos/${id}/planilhas`, grupos, grupoAtual),
+        apiWithGroup(baseUrl, `/processos/${id}/summary`, grupos, grupoAtual),
+        apiWithGroup(baseUrl, `/processos/${id}/relatorio?page=1&page_size=30`, grupos, grupoAtual),
       ]);
 
       setSelected({
@@ -3416,8 +3344,8 @@ function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
     setActionLoadingId(process.id);
     try {
       const data = type === 'cancel'
-        ? await api(baseUrl, `/processos/${process.id}/cancelar`, { method: 'POST' })
-        : await api(baseUrl, `/processos/${process.id}`, { method: 'DELETE' });
+        ? await apiWithGroup(baseUrl, `/processos/${process.id}/cancelar`, grupos, grupoAtual, { method: 'POST' })
+        : await apiWithGroup(baseUrl, `/processos/${process.id}`, grupos, grupoAtual, { method: 'DELETE' });
 
       if (type === 'cancel') {
         const status = normalizeProcessStatus(data?.status || 'cancelled');
@@ -3545,7 +3473,7 @@ function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
             <select className="select" style={{ width: 160 }} value={statusFiltro}
               onChange={e => { setStatusFiltro(e.target.value); setPage(1); }}>
-              <option value="">Todos os status</option>
+              <option value="">Qualquer status</option>
               <option value="queued">Queued</option>
               <option value="running">Running</option>
               <option value="completed">Completed</option>
@@ -3641,6 +3569,8 @@ function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
         baseUrl={baseUrl}
         toast={toast}
         onClose={() => setSelected(null)}
+        grupos={grupos}
+        grupoAtual={grupoAtual}
         extraActions={selected?.proc ? (
           <ProcessActions
             process={selected.proc}
@@ -3720,11 +3650,11 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
 
   const filterOptions = useMemo(() => {
     return {
-      empresas: filterLegacyGroupItems(getQueueCompanyOptions(filaData.data, filaData.items), grupos, grupoAtual, alias => alias),
+      empresas: getQueueCompanyOptions(filaData.data, filaData.items),
       responsaveis: getQueueResponsibleOptions(filaData.data, filaData.items),
       incidencias_iss: getQueueIssIncidenceOptions(filaData.data),
     };
-  }, [filaData.data, filaData.items, grupos, grupoAtual]);
+  }, [filaData.data, filaData.items]);
 
   const visibleItems = filaData.items;
   const queueVirtual = useVirtualRows(visibleItems, { rowHeight: 52, overscan: 10 });
@@ -3839,7 +3769,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
       }));
 
       try {
-        const data = await apiWithGroupFallback(baseUrl, `/nfse?${q.toString()}`, grupos, grupoAtual, {
+        const data = await apiWithGroup(baseUrl, `/nfse?${q.toString()}`, grupos, grupoAtual, {
           signal: controller.signal,
           cache: forceRefresh ? 'no-store' : undefined,
           cacheTtl: CRITICAL_LIST_CACHE_TTL_MS,
@@ -4015,7 +3945,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
     if (!selected) return;
     setSavingObs(true);
     try {
-      await api(baseUrl, `/nfse/${selected.id}`, {
+      await apiWithGroup(baseUrl, `/nfse/${selected.id}`, grupos, grupoAtual, {
         method: 'PUT',
         body: {
           observacao_interna: obsInterna,
@@ -4237,7 +4167,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
             <div className="field queue-filter-card">
               <label className="label">Status</label>
               <select className="select" value={filters.status} onChange={e => setFilter('status', e.target.value)}>
-                <option value="">Todos</option>
+                <option value="">Qualquer status</option>
                 <option value="divergente">Divergente</option>
                 <option value="correta">Correta</option>
                 <option value="pendente">Pendente</option>
@@ -4248,7 +4178,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
             <div className="field queue-filter-card">
               <label className="label">Empresa</label>
               <select className="select" value={filters.empresa} onChange={e => setFilter('empresa', e.target.value)}>
-                <option value="">Todas</option>
+                <option value="">Qualquer empresa</option>
                 {filterOptions.empresas.map(alias => (
                   <option key={alias} value={alias}>{clientName(alias)}</option>
                 ))}
@@ -4257,7 +4187,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
             <div className="field queue-filter-card">
               <label className="label">Tipo de nota</label>
               <select className="select" value={filters.tipo_nota} onChange={e => setFilter('tipo_nota', e.target.value)}>
-                <option value="">Todos</option>
+                <option value="">Qualquer tipo</option>
                 <option value="tomadas">Tomadas</option>
                 <option value="prestadas">Prestadas</option>
               </select>
@@ -4265,7 +4195,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
             <div className="field queue-filter-card">
               <label className="label">Prioridade</label>
               <select className="select" value={filters.prioridade} onChange={e => setFilter('prioridade', e.target.value)}>
-                <option value="">Todas</option>
+                <option value="">Qualquer prioridade</option>
                 <option value="alta">Alta</option>
                 <option value="media">Média</option>
                 <option value="baixa">Baixa</option>
@@ -4274,7 +4204,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
             <div className="field queue-filter-card">
               <label className="label">Responsável</label>
               <select className="select" value={filters.responsavel} onChange={e => setFilter('responsavel', e.target.value)}>
-                <option value="">Todos</option>
+                <option value="">Qualquer responsavel</option>
                 {filterOptions.responsaveis.map(name => (
                   <option key={name} value={name}>{name}</option>
                 ))}
@@ -4283,7 +4213,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
             <div className="field queue-filter-card">
               <label className="label">Conferência</label>
               <select className="select" value={filters.conferencia} onChange={e => setFilter('conferencia', e.target.value)}>
-                <option value="">Todos</option>
+                <option value="">Qualquer conferencia</option>
                 <option value="Analisar">Analisar</option>
                 <option value="Analisado">Analisado</option>
               </select>
@@ -4607,6 +4537,8 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
                 tributosComparativo={tributosComparativo}
                 baseUrl={baseUrl}
                 toast={toast}
+                grupos={grupos}
+                grupoAtual={grupoAtual}
                 statusFila={statusFila}
                 setStatusFila={setStatusFila}
                 prioridadeFila={prioridadeFila}
@@ -4637,22 +4569,20 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
     competencia: '', codigo_servico: '', somente_divergentes: false,
   });
   const debouncedFilters = useDebouncedValue(filters, 350);
-  const [showAllGroups, setShowAllGroups] = useState(false);
   const forceAllNfseRefreshRef = useRef(false);
   const forceNfseListRefreshRef = useRef(false);
-  const effectiveGroupId = showAllGroups ? ALL_GROUP_ID : grupoAtual;
   const selectedGroup = findGroupMeta(grupos, grupoAtual);
 
   // Busca resumida de todas as notas para montar o painel de empresas
   const allNfse = useAsync(signal => {
     const forceRefresh = forceAllNfseRefreshRef.current;
     if (forceRefresh) forceAllNfseRefreshRef.current = false;
-    return apiWithGroupFallback(baseUrl, '/nfse?page=1&page_size=500', grupos, effectiveGroupId, {
+    return apiWithGroup(baseUrl, '/nfse?page=1&page_size=500', grupos, grupoAtual, {
       signal,
       cache: forceRefresh ? 'no-store' : undefined,
       cacheTtl: CRITICAL_LIST_CACHE_TTL_MS,
     });
-  }, [baseUrl, grupos, effectiveGroupId]);
+  }, [baseUrl, grupos, grupoAtual]);
 
   // Notas da empresa selecionada
   const nfseList = useAsync(signal => {
@@ -4661,12 +4591,12 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
     if (forceRefresh) forceNfseListRefreshRef.current = false;
     const q = new URLSearchParams({ page, page_size: pageSize, cert_alias: empresaSelecionada });
     Object.entries(debouncedFilters).forEach(([k, v]) => { if (v !== '' && v !== false) q.set(k, String(v)); });
-    return apiWithGroupFallback(baseUrl, `/nfse?${q}`, grupos, effectiveGroupId, {
+    return apiWithGroup(baseUrl, `/nfse?${q}`, grupos, grupoAtual, {
       signal,
       cache: forceRefresh ? 'no-store' : undefined,
       cacheTtl: CRITICAL_LIST_CACHE_TTL_MS,
     });
-  }, [baseUrl, empresaSelecionada, page, pageSize, JSON.stringify(debouncedFilters), grupos, effectiveGroupId]);
+  }, [baseUrl, empresaSelecionada, page, pageSize, JSON.stringify(debouncedFilters), grupos, grupoAtual]);
 
   // Agrupa por cert_alias
   const empresas = useMemo(() => {
@@ -4683,12 +4613,8 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
     return Object.values(map).sort((a, b) => a.nome.localeCompare(b.nome));
   }, [allNfse.data]);
 
-  const empresasVisiveis = useMemo(
-    () => filterLegacyGroupItems(empresas, grupos, effectiveGroupId, item => item.alias),
-    [empresas, grupos, effectiveGroupId]
-  );
-  const groupFilterActive = !!selectedBackendGroupId(grupos, effectiveGroupId) || isLegacyGroupMode(grupos, effectiveGroupId);
-  const groupFilterEmpty = groupFilterActive && empresas.length === 0;
+  const empresasVisiveis = empresas;
+  const groupFilterEmpty = empresas.length === 0;
 
   const empresasFiltradas = useMemo(() => {
     const t = buscaDebounced.trim().toLowerCase();
@@ -4713,18 +4639,13 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
   };
 
   useEffect(() => {
-    setShowAllGroups(false);
-  }, [grupoAtual]);
-
-  useEffect(() => {
     devLog('nfse render', {
       endpoint: empresaSelecionada ? '/nfse?cert_alias=...' : '/nfse?page=1&page_size=500',
       received: empresaSelecionada ? nfseItems.length : extractResponseList(allNfse.data).length,
       afterGroupFilter: empresasVisiveis.length,
       grupoAtual,
-      showAllGroups,
     });
-  }, [allNfse.data, empresaSelecionada, empresasVisiveis.length, grupoAtual, nfseItems.length, showAllGroups]);
+  }, [allNfse.data, empresaSelecionada, empresasVisiveis.length, grupoAtual, nfseItems.length]);
 
   const filterFields = [
     { k: 'status',         l: 'Status' },
@@ -4773,9 +4694,6 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
           {groupFilterEmpty ? (
             <Alert type="info">
               {groupHasNoCertificates(selectedGroup) ? 'Este grupo nÃ£o possui certificados vinculados.' : 'Nenhum item encontrado para este grupo.'}
-              <button className="btn btn-ghost btn-xs" style={{ marginLeft: 10 }} onClick={() => setShowAllGroups(true)}>
-                Ver todos
-              </button>
             </Alert>
           ) : null}
 
@@ -4922,7 +4840,7 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
 }
 
 // ── Page: Relatório Interativo ───────────────────────────────
-function RelatorioPage({ baseUrl, toast }) {
+function RelatorioPage({ baseUrl, toast, grupoAtual, grupos }) {
   const [processoId, setProcessoId] = useState('');
   const [page, setPage]       = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -4946,7 +4864,7 @@ function RelatorioPage({ baseUrl, toast }) {
       const q = new URLSearchParams({ page, page_size: pageSize });
       ['status', 'municipio', 'competencia', 'cnpj_cpf', 'codigo_servico'].forEach(k => { if (filters[k]) q.set(k, filters[k]); });
       if (filters.somente_divergentes) q.set('somente_divergentes', 'true');
-      const d = await api(baseUrl, `/processos/${processoId.trim()}/relatorio?${q}`, { signal: controller.signal });
+      const d = await apiWithGroup(baseUrl, `/processos/${processoId.trim()}/relatorio?${q}`, grupos, grupoAtual, { signal: controller.signal });
       if (controller.signal.aborted) return;
       setData(d); setEdits({});
     } catch (e) {
@@ -4972,7 +4890,7 @@ function RelatorioPage({ baseUrl, toast }) {
   const salvar = async (idx, row) => {
     setSaving(p => ({ ...p, [idx]: true }));
     try {
-      await api(baseUrl, `/nfse/${row.id}`, { method: 'PUT', body: {
+      await apiWithGroup(baseUrl, `/nfse/${row.id}`, grupos, grupoAtual, { method: 'PUT', body: {
         valor_liquido_correto: Number(row.valor_liquido_correto) || null,
         alertas_fiscais: row.alertas_fiscais || null,
       }});
@@ -5162,17 +5080,15 @@ function RelatorioPage({ baseUrl, toast }) {
 // ── Page: Certificados ───────────────────────────────────────
 function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
   const forceCertRefreshRef = useRef(false);
-  const [showAllGroups, setShowAllGroups] = useState(false);
-  const effectiveGroupId = showAllGroups ? ALL_GROUP_ID : grupoAtual;
   const selectedGroup = findGroupMeta(grupos, grupoAtual);
   const list = useAsync(signal => {
     const forceRefresh = forceCertRefreshRef.current;
     if (forceRefresh) forceCertRefreshRef.current = false;
-    return apiWithGroupFallback(baseUrl, '/certificados', grupos, effectiveGroupId, {
+    return apiWithGroup(baseUrl, '/certificados', grupos, grupoAtual, {
       signal,
       cache: forceRefresh ? 'no-store' : undefined,
     });
-  }, [baseUrl, grupos, effectiveGroupId]);
+  }, [baseUrl, grupos, grupoAtual]);
   const [modal, setModal] = useState(null); // null | 'new' | 'edit' | 'pass'
   const [current, setCurrent] = useState(null);
   const [confirm, setConfirm] = useState(null);
@@ -5181,8 +5097,8 @@ function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
   const certificados = useMemo(
-    () => filterLegacyGroupItems(extractResponseList(list.data, ['certificados', 'items', 'data', 'results', 'rows']), grupos, effectiveGroupId),
-    [list.data, grupos, effectiveGroupId]
+    () => extractResponseList(list.data, ['certificados', 'items', 'data', 'results', 'rows']),
+    [list.data]
   );
   const certificadosTotal = extractResponseTotal(list.data, certificados.length);
   const refreshCertificados = () => {
@@ -5190,10 +5106,6 @@ function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
     forceCertRefreshRef.current = true;
     list.reload().catch(() => {});
   };
-
-  useEffect(() => {
-    setShowAllGroups(false);
-  }, [grupoAtual]);
 
   useEffect(() => {
     devLog('certificados render', {
@@ -5231,8 +5143,9 @@ function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
     try {
       const fd = new FormData();
       ['alias', 'client_name', 'password'].forEach(k => fd.append(k, form[k]));
-      const selectedGroupId = selectedBackendGroupId(grupos, effectiveGroupId);
-      if (selectedGroupId) fd.append('grupo_id', selectedGroupId);
+      const selectedGroupId = selectedBackendGroupId(grupos, grupoAtual);
+      if (!selectedGroupId) throw new Error('Selecione um grupo para cadastrar certificado.');
+      fd.append('grupo_id', selectedGroupId);
       fd.append('file', form.file);
       const resp = await api(baseUrl, '/certificados', { method: 'POST', body: fd });
       if (resp && (resp.ok === false || resp.success === false || resp.error)) {
@@ -5251,7 +5164,7 @@ function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
   const submitEdit = async e => {
     e.preventDefault(); setSaving(true);
     try {
-      await api(baseUrl, `/certificados/${current.alias}`, { method: 'PUT', body: { alias: form.alias, client_name: form.client_name } });
+      await apiWithGroup(baseUrl, `/certificados/${current.alias}`, grupos, grupoAtual, { method: 'PUT', body: { alias: form.alias, client_name: form.client_name } });
       toast('Certificado atualizado.', 'success');
       setModal(null); list.reload().catch(() => {});
     } catch (e) { toast(e.message, 'error'); } finally { setSaving(false); }
@@ -5262,14 +5175,14 @@ function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
     if (passForm.password !== passForm.confirm) { toast('As senhas não coincidem.', 'error'); return; }
     setSaving(true);
     try {
-      await api(baseUrl, `/certificados/${current.alias}/senha`, { method: 'PUT', body: { password: passForm.password } });
+      await apiWithGroup(baseUrl, `/certificados/${current.alias}/senha`, grupos, grupoAtual, { method: 'PUT', body: { password: passForm.password } });
       toast('Senha redefinida.', 'success'); setModal(null);
     } catch (e) { toast(e.message, 'error'); } finally { setSaving(false); }
   };
 
   const doDelete = async () => {
     try {
-      await api(baseUrl, `/certificados/${confirm}`, { method: 'DELETE' });
+      await apiWithGroup(baseUrl, `/certificados/${confirm}`, grupos, grupoAtual, { method: 'DELETE' });
       toast('Certificado excluído.', 'success'); setConfirm(null); list.reload().catch(() => {});
     } catch (e) { toast(e.message, 'error'); setConfirm(null); }
   };
@@ -5285,12 +5198,9 @@ function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
         }
       />
       {list.error ? <Alert type="error">{list.error}</Alert> : null}
-      {!list.loading && certificados.length === 0 && selectedBackendGroupId(grupos, effectiveGroupId) ? (
+      {!list.loading && certificados.length === 0 && selectedBackendGroupId(grupos, grupoAtual) ? (
         <Alert type="info">
           {groupHasNoCertificates(selectedGroup) ? 'Este grupo nÃ£o possui certificados vinculados.' : 'Nenhum certificado encontrado para este grupo.'}
-          <button className="btn btn-ghost btn-xs" style={{ marginLeft: 10 }} onClick={() => setShowAllGroups(true)}>
-            Ver todos
-          </button>
         </Alert>
       ) : null}
 
@@ -5413,24 +5323,21 @@ function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
 
 // ── Page: Credenciais ────────────────────────────────────────
 function CredenciaisPage({ baseUrl, toast, grupoAtual, grupos }) {
-  const list = useAsync(signal => apiWithGroupFallback(baseUrl, '/credenciais', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
+  const list = useAsync(signal => apiWithGroup(baseUrl, '/credenciais', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
   const [modal, setModal] = useState(null);
   const [current, setCurrent] = useState(null);
   const [confirm, setConfirm] = useState(null);
   const [form, setForm] = useState({ alias: '', cpf_cnpj: '', password: '' });
   const [passForm, setPassForm] = useState({ password: '', confirm: '' });
   const [saving, setSaving] = useState(false);
-  const credenciaisVisiveis = useMemo(
-    () => filterLegacyGroupItems(list.data?.credenciais || [], grupos, grupoAtual),
-    [list.data?.credenciais, grupos, grupoAtual]
-  );
+  const credenciaisVisiveis = list.data?.credenciais || [];
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
 
   const submitNew = async e => {
     e.preventDefault(); setSaving(true);
     try {
-      await api(baseUrl, '/credenciais', { method: 'POST', body: form });
+      await apiWithGroup(baseUrl, '/credenciais', grupos, grupoAtual, { method: 'POST', body: { ...form, ...groupQueryEntries(grupos, grupoAtual) } });
       toast('Credencial cadastrada.', 'success');
       setModal(null); setForm({ alias: '', cpf_cnpj: '', password: '' }); list.reload();
     } catch (e) { toast(e.message, 'error'); } finally { setSaving(false); }
@@ -5439,7 +5346,7 @@ function CredenciaisPage({ baseUrl, toast, grupoAtual, grupos }) {
   const submitEdit = async e => {
     e.preventDefault(); setSaving(true);
     try {
-      await api(baseUrl, `/credenciais/${current.alias}`, { method: 'PUT', body: { alias: form.alias, cpf_cnpj: form.cpf_cnpj } });
+      await apiWithGroup(baseUrl, `/credenciais/${current.alias}`, grupos, grupoAtual, { method: 'PUT', body: { alias: form.alias, cpf_cnpj: form.cpf_cnpj } });
       toast('Credencial atualizada.', 'success'); setModal(null); list.reload();
     } catch (e) { toast(e.message, 'error'); } finally { setSaving(false); }
   };
@@ -5449,14 +5356,14 @@ function CredenciaisPage({ baseUrl, toast, grupoAtual, grupos }) {
     if (passForm.password !== passForm.confirm) { toast('As senhas não coincidem.', 'error'); return; }
     setSaving(true);
     try {
-      await api(baseUrl, `/credenciais/${current.alias}/senha`, { method: 'PUT', body: { password: passForm.password } });
+      await apiWithGroup(baseUrl, `/credenciais/${current.alias}/senha`, grupos, grupoAtual, { method: 'PUT', body: { password: passForm.password } });
       toast('Senha redefinida.', 'success'); setModal(null);
     } catch (e) { toast(e.message, 'error'); } finally { setSaving(false); }
   };
 
   const doDelete = async () => {
     try {
-      await api(baseUrl, `/credenciais/${confirm}`, { method: 'DELETE' });
+      await apiWithGroup(baseUrl, `/credenciais/${confirm}`, grupos, grupoAtual, { method: 'DELETE' });
       toast('Credencial excluída.', 'success'); setConfirm(null); list.reload();
     } catch (e) { toast(e.message, 'error'); setConfirm(null); }
   };
@@ -5667,8 +5574,8 @@ function ConfiguracoesPage({ baseUrl, setBaseUrl, toast }) {
 }
 
 // ── App Shell ────────────────────────────────────────────────
-function GroupSelectionScreen({ groups, loading, error, onSelect }) {
-  const options = Array.isArray(groups) && groups.length ? groups : [ALL_GROUP_OPTION];
+function GroupSelectionScreen({ groups, loading, error, onSelect, onRetry }) {
+  const options = Array.isArray(groups) ? groups : [];
   return (
     <div style={{
       minHeight: '100vh',
@@ -5685,8 +5592,20 @@ function GroupSelectionScreen({ groups, loading, error, onSelect }) {
         <div className="card-body">
           <div style={{ display: 'grid', gap: 12 }}>
             {loading ? <Loading label="Carregando grupos..." /> : null}
-            {error ? <Alert type="info">Nao foi possivel carregar /grupos. Usando fallback temporario.</Alert> : null}
-            {!loading && options.map(group => (
+            {error ? (
+              <Alert type="error">
+                Nao foi possivel carregar os grupos. Verifique a conexao com a API e tente novamente.
+              </Alert>
+            ) : null}
+            {!loading && error ? (
+              <button className="btn btn-primary" onClick={onRetry} style={{ justifyContent: 'center' }}>
+                Tentar novamente
+              </button>
+            ) : null}
+            {!loading && !error && options.length === 0 ? (
+              <Alert type="info">Nenhum grupo disponivel para este usuario.</Alert>
+            ) : null}
+            {!loading && !error && options.map(group => (
               <button
                 key={group.id}
                 className="btn btn-ghost"
@@ -5708,7 +5627,7 @@ function GroupSelectionScreen({ groups, loading, error, onSelect }) {
             ))}
           </div>
           <div style={{ marginTop: 16, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
-            Os grupos reais sao carregados do backend. O fallback legado aparece apenas se /grupos estiver indisponivel.
+            Os grupos sao carregados do backend e todas as consultas usam o grupo selecionado.
           </div>
         </div>
       </div>
@@ -5728,15 +5647,18 @@ function App() {
   const { toasts, toast } = useToast();
   const gruposRequest = useAsync(signal => api(baseUrl, '/grupos', { signal, cacheTtl: 120_000 }), [baseUrl]);
   const grupos = useMemo(() => (
-    gruposRequest.error ? LEGACY_GROUP_OPTIONS : normalizeGroupsPayload(gruposRequest.data)
+    gruposRequest.error ? [] : normalizeGroupsPayload(gruposRequest.data)
   ), [gruposRequest.data, gruposRequest.error]);
 
   const selecionarGrupo = groupKey => {
     const next = normalizeStoredGroupId(groupKey);
     if (!next) return;
+    const selectedGroup = findGroupMeta(grupos, next);
+    if (!selectedGroup) return;
     clearApiCache();
     localStorage.setItem(GROUP_ID_STORAGE_KEY, next);
-    localStorage.removeItem(GROUP_STORAGE_KEY);
+    localStorage.setItem(GROUP_LABEL_STORAGE_KEY, selectedGroup.label || next);
+    localStorage.setItem(GROUP_SLUG_STORAGE_KEY, selectedGroup.slug || next);
     setActive('dashboard');
     setMobileOpen(false);
     setDesktopSidebarVisible(true);
@@ -5747,7 +5669,8 @@ function App() {
   const trocarGrupo = () => {
     clearApiCache();
     localStorage.removeItem(GROUP_ID_STORAGE_KEY);
-    localStorage.removeItem(GROUP_STORAGE_KEY);
+    localStorage.removeItem(GROUP_LABEL_STORAGE_KEY);
+    localStorage.removeItem(GROUP_SLUG_STORAGE_KEY);
     setActive('dashboard');
     setMobileOpen(false);
     setDesktopSidebarVisible(true);
@@ -5757,11 +5680,23 @@ function App() {
 
   useEffect(() => {
     if (!grupoAtual || gruposRequest.loading) return;
-    if (!findGroupMeta(grupos, grupoAtual)) {
+    if (gruposRequest.error) return;
+    const selectedGroup = findGroupMeta(grupos, grupoAtual);
+    if (!selectedGroup) {
       localStorage.removeItem(GROUP_ID_STORAGE_KEY);
+      localStorage.removeItem(GROUP_LABEL_STORAGE_KEY);
+      localStorage.removeItem(GROUP_SLUG_STORAGE_KEY);
       setGrupoAtual('');
+      return;
     }
-  }, [grupoAtual, grupos, gruposRequest.loading]);
+    localStorage.setItem(GROUP_LABEL_STORAGE_KEY, selectedGroup.label || grupoAtual);
+    localStorage.setItem(GROUP_SLUG_STORAGE_KEY, selectedGroup.slug || grupoAtual);
+  }, [grupoAtual, grupos, gruposRequest.loading, gruposRequest.error]);
+
+  useEffect(() => {
+    if (grupoAtual || gruposRequest.loading || gruposRequest.error) return;
+    if (grupos.length === 1) selecionarGrupo(grupos[0].id);
+  }, [grupoAtual, grupos, gruposRequest.loading, gruposRequest.error]);
 
   useEffect(() => {
     const cleaned = normalizeBaseUrl(baseUrl);
@@ -5837,7 +5772,28 @@ function App() {
   if (!grupoAtual) {
     return (
       <>
-        <GroupSelectionScreen groups={grupos} loading={gruposRequest.loading} error={gruposRequest.error} onSelect={selecionarGrupo} />
+        <GroupSelectionScreen
+          groups={grupos}
+          loading={gruposRequest.loading}
+          error={gruposRequest.error}
+          onSelect={selecionarGrupo}
+          onRetry={() => gruposRequest.reload().catch(() => {})}
+        />
+        <ToastContainer toasts={toasts} />
+      </>
+    );
+  }
+
+  if (gruposRequest.error) {
+    return (
+      <>
+        <GroupSelectionScreen
+          groups={[]}
+          loading={false}
+          error={gruposRequest.error}
+          onSelect={selecionarGrupo}
+          onRetry={() => gruposRequest.reload().catch(() => {})}
+        />
         <ToastContainer toasts={toasts} />
       </>
     );

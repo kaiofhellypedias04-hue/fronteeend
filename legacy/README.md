@@ -1,6 +1,6 @@
 # Legacy assets
 
-`app.legacy.js` is a pre-Vite browser bundle kept only for reference.
+The pre-Vite browser bundle was removed because it contained obsolete group-selection logic.
 
 Production must use the Vite entrypoint in `index.html`:
 
