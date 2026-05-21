@@ -2080,8 +2080,8 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
       icon: IconPlay,
       title: 'Execucoes',
       value: stats.execucoes,
-      detail: groupFilterActive ? 'Execucoes visiveis no painel' : 'Total de execucoes registradas',
-      helper: groupFilterActive ? 'Filtro visual pelo grupo selecionado' : 'Contagem geral retornada pela API',
+      detail: 'Execucoes do grupo selecionado',
+      helper: 'Consulta filtrada pelo grupo atual',
     },
     {
       key: 'processos',
@@ -2089,8 +2089,8 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
       icon: IconProcess,
       title: 'Processos',
       value: stats.processos,
-      detail: groupFilterActive ? 'Processos visiveis no painel' : 'Total de processos registrados',
-      helper: groupFilterActive ? 'Filtro visual pelo grupo selecionado' : 'Contagem geral retornada pela API',
+      detail: 'Processos do grupo selecionado',
+      helper: 'Consulta filtrada pelo grupo atual',
     },
     {
       key: 'jobs',
@@ -2307,8 +2307,8 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
               page={execModalPage}
               pageSize={execModalPageSize}
               total={fullExecs.data?.total || fullExecs.data?.items?.length || 0}
-              infoLabel={groupFilterActive ? `Mostrando ${fullExecItems.length} de ${fullExecItems.length}` : ''}
-              pageLabel={groupFilterActive ? String(execModalPage) : ''}
+              infoLabel={`Mostrando ${fullExecItems.length} de ${fullExecItems.length}`}
+              pageLabel={String(execModalPage)}
               onPage={setExecModalPage}
               onSize={size => { setExecModalPageSize(size); setExecModalPage(1); }}
             />
@@ -2334,8 +2334,8 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
               page={procModalPage}
               pageSize={procModalPageSize}
               total={fullProcs.data?.total || fullProcs.data?.items?.length || 0}
-              infoLabel={groupFilterActive ? `Mostrando ${fullProcItems.length} de ${fullProcItems.length}` : ''}
-              pageLabel={groupFilterActive ? String(procModalPage) : ''}
+              infoLabel={`Mostrando ${fullProcItems.length} de ${fullProcItems.length}`}
+              pageLabel={String(procModalPage)}
               onPage={setProcModalPage}
               onSize={size => { setProcModalPageSize(size); setProcModalPage(1); }}
             />
