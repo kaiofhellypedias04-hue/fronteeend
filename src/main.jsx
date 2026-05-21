@@ -57,17 +57,21 @@ const MENU = [
 ];
 
 const API_URL_STORAGE_KEY = 'nfse_url';
+const GROUP_ID_STORAGE_KEY = 'grupo_id_atual';
 const GROUP_STORAGE_KEY = 'grupo_atual';
+const ALL_GROUP_ID = 'todos';
 
-// Fase 1: seleção visual de grupo, não é segurança real.
-// Segurança real será feita no backend em fase futura.
-const GROUP_OPTIONS = [
-  { key: 'todos', label: 'Todos', match: '' },
-  { key: 'canopus', label: 'Grupo Canopus', match: 'CANOPUS' },
-  { key: 'marox', label: 'Grupo Marox', match: 'MAROX' },
+// Grupos reais vem de GET /grupos; estes valores sao fallback temporario.
+const ALL_GROUP_OPTION = { id: ALL_GROUP_ID, label: 'Todos', all: true, legacy: false };
+
+// Fallback temporario para ambientes onde GET /grupos ainda nao esta disponivel.
+const LEGACY_GROUP_OPTIONS = [
+  { id: ALL_GROUP_ID, key: ALL_GROUP_ID, label: 'Todos', match: '', all: true, legacy: true },
+  { id: 'legacy:canopus', key: 'canopus', label: 'Grupo Canopus', match: 'CANOPUS', legacy: true },
+  { id: 'legacy:marox', key: 'marox', label: 'Grupo Marox', match: 'MAROX', legacy: true },
 ];
 
-const RAILWAY_API_BASE_URL = 'https://web-production-62f13.up.railway.app';
+const RAILWAY_API_BASE_URL = 'https://backeend-production-5a65.up.railway.app/';
 const DEV_API_PROXY_BASE_URL = '/api';
 const DEFAULT_API_BASE_URL = normalizeBaseUrl(RAILWAY_API_BASE_URL);
 
@@ -136,69 +140,128 @@ function resolveApiBaseUrl() {
   return stored;
 }
 
-function normalizeGroupKey(value) {
-  const raw = String(value || '').trim().toLowerCase();
-  return GROUP_OPTIONS.some(group => group.key === raw) ? raw : '';
+function normalizeStoredGroupId(value) {
+  const raw = String(value || '').trim();
+  return raw || '';
 }
 
 function readCurrentGroup() {
-  return normalizeGroupKey(localStorage.getItem(GROUP_STORAGE_KEY));
+  const storedId = normalizeStoredGroupId(localStorage.getItem(GROUP_ID_STORAGE_KEY));
+  if (storedId) return storedId;
+  const legacyKey = String(localStorage.getItem(GROUP_STORAGE_KEY) || '').trim().toLowerCase();
+  if (!legacyKey) return '';
+  if (legacyKey === ALL_GROUP_ID) return ALL_GROUP_ID;
+  const legacy = LEGACY_GROUP_OPTIONS.find(group => group.key === legacyKey);
+  return legacy?.id || '';
 }
 
-function getGroupMeta(groupKey) {
-  const key = normalizeGroupKey(groupKey);
-  return GROUP_OPTIONS.find(group => group.key === key) || null;
+function normalizeBackendGroup(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = String(firstDefinedValue(raw.id, raw.grupo_id, raw.uuid, raw.codigo) ?? '').trim();
+  if (!id) return null;
+  const label = String(firstDefinedValue(raw.nome, raw.name, raw.label, raw.descricao, raw.description, id) ?? id).trim();
+  const certCountRaw = firstDefinedValue(
+    raw.certificados_count,
+    raw.total_certificados,
+    raw.quantidade_certificados,
+    raw.certificados?.length,
+    raw.count
+  );
+  const certCount = Number(certCountRaw);
+  return {
+    ...raw,
+    id,
+    grupo_id: id,
+    label: label || id,
+    certCount: Number.isFinite(certCount) ? certCount : null,
+    all: false,
+    legacy: false,
+  };
 }
 
-function getGroupLabel(groupKey) {
-  return getGroupMeta(groupKey)?.label || '';
+function normalizeGroupsPayload(payload) {
+  const groups = extractResponseList(payload, ['grupos', 'items', 'data', 'results', 'rows'])
+    .map(normalizeBackendGroup)
+    .filter(Boolean);
+  return [ALL_GROUP_OPTION, ...groups];
 }
 
-function pertenceAoGrupo(certAlias, grupo) {
-  const group = getGroupMeta(grupo);
-  if (!group || !group.match) return true;
+function findGroupMeta(groups, groupId) {
+  const id = normalizeStoredGroupId(groupId);
+  return (Array.isArray(groups) ? groups : []).find(group => group.id === id) || null;
+}
+
+function getGroupLabel(groups, groupId) {
+  return findGroupMeta(groups, groupId)?.label || '';
+}
+
+function selectedBackendGroupId(groups, groupId) {
+  const group = findGroupMeta(groups, groupId);
+  if (!group || group.all || group.legacy) return '';
+  return group.grupo_id || group.id;
+}
+
+function appendGroupParam(path, groups, groupId) {
+  const selectedId = selectedBackendGroupId(groups, groupId);
+  if (!selectedId) return path;
+  const [pathname, query = ''] = String(path || '').split('?');
+  const q = new URLSearchParams(query);
+  q.set('grupo_id', selectedId);
+  const nextQuery = q.toString();
+  return nextQuery ? `${pathname}?${nextQuery}` : pathname;
+}
+
+function groupQueryEntries(groups, groupId) {
+  const selectedId = selectedBackendGroupId(groups, groupId);
+  return selectedId ? { grupo_id: selectedId } : {};
+}
+
+async function apiWithGroupFallback(baseUrl, path, groups, groupId, opts = {}) {
+  const groupedPath = appendGroupParam(path, groups, groupId);
+  if (groupedPath === path) return api(baseUrl, path, opts);
+  try {
+    return await api(baseUrl, groupedPath, opts);
+  } catch (e) {
+    devLog('group param fallback', { endpoint: groupedPath, fallback: path, message: e.message });
+    return api(baseUrl, path, { ...opts, cache: 'no-store' });
+  }
+}
+
+function isLegacyGroupMode(groups, groupId) {
+  const group = findGroupMeta(groups, groupId);
+  return !!group?.legacy && !!group.match;
+}
+
+function legacyPertenceAoGrupo(certAlias, groups, groupId) {
+  const group = findGroupMeta(groups, groupId);
+  if (!group?.legacy || !group.match) return true;
   return String(certAlias || '').toUpperCase().includes(group.match);
 }
 
-function filterGroupAliases(items, grupo, getAlias = item => item?.alias) {
+function filterLegacyGroupItems(items, groups, groupId, getAlias = item => item?.alias) {
   const list = Array.isArray(items) ? items : [];
-  const group = getGroupMeta(grupo);
-  if (!group || !group.match) return list;
-  const filtered = list.filter(item => pertenceAoGrupo(getAlias(item), grupo));
-  return filtered.length > 0 || list.length === 0 ? filtered : list;
+  if (!isLegacyGroupMode(groups, groupId)) return list;
+  return list.filter(item => legacyPertenceAoGrupo(getAlias(item), groups, groupId));
 }
 
-function getGroupFilterState(items, grupo, getAlias = item => item?.alias) {
-  const list = Array.isArray(items) ? items : [];
-  const group = getGroupMeta(grupo);
-  if (!group || !group.match) {
-    return { items: list, active: false, empty: false, filteredCount: list.length, totalCount: list.length };
-  }
-  const filtered = list.filter(item => pertenceAoGrupo(getAlias(item), grupo));
-  return {
-    items: filtered,
-    active: true,
-    empty: list.length > 0 && filtered.length === 0,
-    filteredCount: filtered.length,
-    totalCount: list.length,
-  };
+function groupHasNoCertificates(group) {
+  return !!group && !group.all && !group.legacy && group.certCount === 0;
 }
 
 function devLog(label, details = {}) {
   if (IS_DEV) console.info(`[nfse-debug] ${label}`, details);
 }
 
-function dashboardItemPertenceAoGrupo(item, grupo) {
-  const group = getGroupMeta(grupo);
-  if (!group || !group.match) return true;
-  // Fase 1: filtro visual por grupo; segurança real será feita no backend.
+function dashboardItemPertenceAoGrupo(item, groups, groupId) {
+  if (!isLegacyGroupMode(groups, groupId)) return true;
+  // Usado apenas no fallback legado quando GET /grupos falha.
   return [item?.cert_alias, item?.client_name, item?.empresa, item?.nome, item?.alias]
-    .some(value => String(value || '').trim() && pertenceAoGrupo(value, grupo));
+    .some(value => String(value || '').trim() && legacyPertenceAoGrupo(value, groups, groupId));
 }
 
-function filterDashboardGroupItems(items, grupo) {
+function filterDashboardGroupItems(items, groups, groupId) {
   const list = Array.isArray(items) ? items : [];
-  return list.filter(item => dashboardItemPertenceAoGrupo(item, grupo));
+  return list.filter(item => dashboardItemPertenceAoGrupo(item, groups, groupId));
 }
 
 function memoizeFormatter(fn, maxEntries = 300) {
@@ -1269,13 +1332,13 @@ function buildQueueSearchParams({ page = 1, pageSize = DEFAULT_QUEUE_PAGE_SIZE, 
   return q;
 }
 
-function prefetchDefaultQueue(baseUrl) {
+function prefetchDefaultQueue(baseUrl, groups = [], groupId = ALL_GROUP_ID) {
   const q = buildQueueSearchParams({
     page: 1,
     pageSize: DEFAULT_QUEUE_PAGE_SIZE,
     filters: getQueueDefaultFilters(),
   });
-  return prefetchApi(baseUrl, `/nfse?${q.toString()}`, { cacheTtl: CRITICAL_LIST_CACHE_TTL_MS });
+  return prefetchApi(baseUrl, appendGroupParam(`/nfse?${q.toString()}`, groups, groupId), { cacheTtl: CRITICAL_LIST_CACHE_TTL_MS });
 }
 
 function getQueueIssIncidenceValue(item) {
@@ -1800,11 +1863,11 @@ function DashboardProcessesTable({ items, repeatLoadingId, onRepeat, showActions
 }
 
 // ── Page: Dashboard ──────────────────────────────────────────
-function DashboardPage({ baseUrl, toast, navigate, grupoAtual }) {
+function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
   const health  = useAsync(signal => api(baseUrl, '/health', { signal }), [baseUrl]);
-  const execs   = useAsync(signal => api(baseUrl, '/execucoes?page=1&page_size=6', { signal }), [baseUrl]);
-  const procs   = useAsync(signal => api(baseUrl, '/processos?page=1&page_size=6', { signal }), [baseUrl]);
-  const agends  = useAsync(signal => api(baseUrl, '/agendamentos', { signal }), [baseUrl]);
+  const execs   = useAsync(signal => apiWithGroupFallback(baseUrl, '/execucoes?page=1&page_size=6', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
+  const procs   = useAsync(signal => apiWithGroupFallback(baseUrl, '/processos?page=1&page_size=6', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
+  const agends  = useAsync(signal => apiWithGroupFallback(baseUrl, '/agendamentos', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
   const [execModalOpen, setExecModalOpen] = useState(false);
   const [execModalPage, setExecModalPage] = useState(1);
   const [execModalPageSize, setExecModalPageSize] = useState(25);
@@ -1816,42 +1879,43 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual }) {
   const [repeatSuccess, setRepeatSuccess] = useState('');
   const fullExecs = useAsync(signal => {
     if (!execModalOpen) return Promise.resolve({ items: [], total: 0 });
-    return api(baseUrl, `/execucoes?page=${execModalPage}&page_size=${execModalPageSize}`, { signal });
-  }, [baseUrl, execModalOpen, execModalPage, execModalPageSize]);
+    return apiWithGroupFallback(baseUrl, `/execucoes?page=${execModalPage}&page_size=${execModalPageSize}`, grupos, grupoAtual, { signal });
+  }, [baseUrl, execModalOpen, execModalPage, execModalPageSize, grupos, grupoAtual]);
   const fullProcs = useAsync(signal => {
     if (!procModalOpen) return Promise.resolve({ items: [], total: 0 });
-    return api(baseUrl, `/processos?page=${procModalPage}&page_size=${procModalPageSize}`, { signal });
-  }, [baseUrl, procModalOpen, procModalPage, procModalPageSize]);
+    return apiWithGroupFallback(baseUrl, `/processos?page=${procModalPage}&page_size=${procModalPageSize}`, grupos, grupoAtual, { signal });
+  }, [baseUrl, procModalOpen, procModalPage, procModalPageSize, grupos, grupoAtual]);
 
-  const groupFilterActive = !!getGroupMeta(grupoAtual);
+  const groupFilterActive = !!selectedBackendGroupId(grupos, grupoAtual) || isLegacyGroupMode(grupos, grupoAtual);
+  const legacyGroupFilterActive = isLegacyGroupMode(grupos, grupoAtual);
   const recentExecutions = useMemo(
-    () => filterDashboardGroupItems(execs.data?.items, grupoAtual),
-    [execs.data?.items, grupoAtual]
+    () => filterDashboardGroupItems(execs.data?.items, grupos, grupoAtual),
+    [execs.data?.items, grupos, grupoAtual]
   );
   const recentProcesses = useMemo(
-    () => filterDashboardGroupItems(procs.data?.items, grupoAtual),
-    [procs.data?.items, grupoAtual]
+    () => filterDashboardGroupItems(procs.data?.items, grupos, grupoAtual),
+    [procs.data?.items, grupos, grupoAtual]
   );
   const fullExecItems = useMemo(
-    () => filterDashboardGroupItems(fullExecs.data?.items, grupoAtual),
-    [fullExecs.data?.items, grupoAtual]
+    () => filterDashboardGroupItems(fullExecs.data?.items, grupos, grupoAtual),
+    [fullExecs.data?.items, grupos, grupoAtual]
   );
   const fullProcItems = useMemo(
-    () => filterDashboardGroupItems(fullProcs.data?.items, grupoAtual),
-    [fullProcs.data?.items, grupoAtual]
+    () => filterDashboardGroupItems(fullProcs.data?.items, grupos, grupoAtual),
+    [fullProcs.data?.items, grupos, grupoAtual]
   );
 
   const stats = useMemo(() => ({
     status:    health.data?.status || 'offline',
-    execucoes: groupFilterActive ? recentExecutions.length : execs.data?.total || 0,
-    processos: groupFilterActive ? recentProcesses.length : procs.data?.total || 0,
+    execucoes: legacyGroupFilterActive ? recentExecutions.length : execs.data?.total || 0,
+    processos: legacyGroupFilterActive ? recentProcesses.length : procs.data?.total || 0,
     jobs:      agends.data?.jobs?.filter(j => j.running || j.ativo)?.length || 0,
-  }), [health.data, execs.data?.total, procs.data?.total, agends.data, groupFilterActive, recentExecutions.length, recentProcesses.length]);
+  }), [health.data, execs.data?.total, procs.data?.total, agends.data, legacyGroupFilterActive, recentExecutions.length, recentProcesses.length]);
 
   const isRefreshing = health.loading || execs.loading || procs.loading || agends.loading;
   const apiOnline = stats.status === 'ok';
-  const recentExecutionsTotal = groupFilterActive ? recentExecutions.length : execs.data?.total;
-  const recentProcessesTotal = groupFilterActive ? recentProcesses.length : procs.data?.total;
+  const recentExecutionsTotal = legacyGroupFilterActive ? recentExecutions.length : execs.data?.total;
+  const recentProcessesTotal = legacyGroupFilterActive ? recentProcesses.length : procs.data?.total;
   const recentStatusesNeedingAttention = [...recentExecutions, ...recentProcesses]
     .map(item => normalizeProcessStatus(item?.status))
     .filter(status => status === 'failed' || status === 'queued');
@@ -2193,9 +2257,12 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual }) {
 }
 
 // ── Page: Execução ───────────────────────────────────────────
-function ExecucaoPage({ baseUrl, toast, grupoAtual }) {
-  const certs = useAsync(signal => api(baseUrl, '/certificados', { signal }), [baseUrl]);
-  const creds = useAsync(signal => api(baseUrl, '/credenciais', { signal }), [baseUrl]);
+function ExecucaoPage({ baseUrl, toast, grupoAtual, grupos }) {
+  const [showAllGroups, setShowAllGroups] = useState(false);
+  const effectiveGroupId = showAllGroups ? ALL_GROUP_ID : grupoAtual;
+  const selectedGroup = findGroupMeta(grupos, grupoAtual);
+  const certs = useAsync(signal => apiWithGroupFallback(baseUrl, '/certificados', grupos, effectiveGroupId, { signal }), [baseUrl, grupos, effectiveGroupId]);
+  const creds = useAsync(signal => apiWithGroupFallback(baseUrl, '/credenciais', grupos, effectiveGroupId, { signal }), [baseUrl, grupos, effectiveGroupId]);
 
   const [form, setForm] = useState(() => {
     const saved = localStorage.getItem('nfse_last_dir') || './saida';
@@ -2234,7 +2301,11 @@ function ExecucaoPage({ baseUrl, toast, grupoAtual }) {
   const listaCompleta = isCred
     ? (creds.data?.credenciais || [])
     : (certs.data?.certificados || []);
-  const lista = useMemo(() => filterGroupAliases(listaCompleta, grupoAtual), [listaCompleta, grupoAtual]);
+  const lista = useMemo(
+    () => filterLegacyGroupItems(listaCompleta, grupos, effectiveGroupId),
+    [listaCompleta, grupos, effectiveGroupId]
+  );
+  const groupEmptyMessage = groupHasNoCertificates(selectedGroup) && !isCred && !showAllGroups;
 
   const toggle = alias => setForm(f => ({
     ...f,
@@ -2258,6 +2329,7 @@ function ExecucaoPage({ baseUrl, toast, grupoAtual }) {
       const lookbackDays = Number(form.lookback_days);
       const payload = {
         ...form,
+        ...groupQueryEntries(grupos, effectiveGroupId),
         lookback_days: lookbackDays,
         use_chunk_days: !!form.use_chunk_days,
         chunk_days: chunkDays,
@@ -2277,6 +2349,10 @@ function ExecucaoPage({ baseUrl, toast, grupoAtual }) {
   };
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
+
+  useEffect(() => {
+    setShowAllGroups(false);
+  }, [grupoAtual]);
 
   return (
     <div className="page-enter">
@@ -2461,7 +2537,14 @@ function ExecucaoPage({ baseUrl, toast, grupoAtual }) {
           <div className="card-body" style={{ paddingTop: 12 }}>
             {(isCred ? creds.loading : certs.loading) ? <Loading /> : (
               <div className="alias-list">
-                {lista.length === 0 && (
+                {groupEmptyMessage ? (
+                  <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
+                    Este grupo nÃ£o possui certificados vinculados.
+                    <button className="btn btn-ghost btn-xs" style={{ marginLeft: 10 }} onClick={() => setShowAllGroups(true)}>
+                      Ver todos
+                    </button>
+                  </div>
+                ) : lista.length === 0 && (
                   <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
                     Nenhum {isCred ? 'credencial' : 'certificado'} cadastrado
                   </div>
@@ -2495,8 +2578,8 @@ function ExecucaoPage({ baseUrl, toast, grupoAtual }) {
 }
 
 // ── Page: Agendamentos ───────────────────────────────────────
-function AgendamentosPage({ baseUrl, toast }) {
-  const list = useAsync(signal => api(baseUrl, '/agendamentos', { signal }), [baseUrl]);
+function AgendamentosPage({ baseUrl, toast, grupoAtual, grupos }) {
+  const list = useAsync(signal => apiWithGroupFallback(baseUrl, '/agendamentos', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
   const [confirm, setConfirm] = useState(null);
   const [statusId, setStatusId] = useState('');
   const [statusRes, setStatusRes] = useState(null);
@@ -3104,7 +3187,7 @@ function ProcessActions({ process, busy, onCancel, onDelete, compact = false }) 
   return actions.length ? <>{actions}</> : null;
 }
 
-function ProcessosPage({ baseUrl, toast, grupoAtual }) {
+function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
   const [empresaSelecionada, setEmpresaSelecionada] = useState(null);
   const [busca, setBusca]                           = useState('');
   const buscaDebounced                              = useDebouncedValue(busca, 180);
@@ -3116,14 +3199,15 @@ function ProcessosPage({ baseUrl, toast, grupoAtual }) {
   const [actionLoadingId, setActionLoadingId]       = useState(null);
   const [confirmAction, setConfirmAction]           = useState(null);
 
-  const allProcs = useAsync(signal => api(baseUrl, '/processos?page=1&page_size=500', { signal, cacheTtl: 60_000 }), [baseUrl]);
+  const selectedGroup = findGroupMeta(grupos, grupoAtual);
+  const allProcs = useAsync(signal => apiWithGroupFallback(baseUrl, '/processos?page=1&page_size=500', grupos, grupoAtual, { signal, cacheTtl: 60_000 }), [baseUrl, grupos, grupoAtual]);
 
   const procList = useAsync(signal => {
     if (!empresaSelecionada) return Promise.resolve({ items: [], total: 0 });
     const q = new URLSearchParams({ page, page_size: pageSize, cert_alias: empresaSelecionada });
     if (statusFiltro) q.set('status', statusFiltro);
-    return api(baseUrl, `/processos?${q}`, { signal });
-  }, [baseUrl, empresaSelecionada, page, pageSize, statusFiltro]);
+    return apiWithGroupFallback(baseUrl, `/processos?${q}`, grupos, grupoAtual, { signal });
+  }, [baseUrl, empresaSelecionada, page, pageSize, statusFiltro, grupos, grupoAtual]);
 
   // Agrupa por empresa com contadores
   const empresas = useMemo(() => {
@@ -3144,8 +3228,8 @@ function ProcessosPage({ baseUrl, toast, grupoAtual }) {
   }, [allProcs.data]);
 
   const empresasVisiveis = useMemo(() => {
-    return empresas.filter(e => pertenceAoGrupo(e.alias, grupoAtual));
-  }, [empresas, grupoAtual]);
+    return filterLegacyGroupItems(empresas, grupos, grupoAtual, item => item.alias);
+  }, [empresas, grupos, grupoAtual]);
 
   const empresasFiltradas = useMemo(() => {
     const t = buscaDebounced.trim().toLowerCase();
@@ -3286,7 +3370,7 @@ function ProcessosPage({ baseUrl, toast, grupoAtual }) {
           {allProcs.loading ? <Loading /> : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
               {empresasFiltradas.length === 0
-                ? <Empty msg="Nenhuma empresa encontrada" />
+                ? <Empty msg={groupHasNoCertificates(selectedGroup) ? 'Este grupo nÃ£o possui certificados vinculados.' : 'Nenhuma empresa encontrada'} />
                 : empresasFiltradas.map(e => (
                   <div
                     key={e.alias}
@@ -3479,7 +3563,7 @@ function ProcessosPage({ baseUrl, toast, grupoAtual }) {
 // Nível 1: empresas únicas com totais
 // Nível 2: ao clicar na empresa, mostra todas as notas dela
 
-function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a', sidebarVisible = true, onToggleSidebar = null }) {
+function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, variant = 'a', sidebarVisible = true, onToggleSidebar = null }) {
   const isVariantB = variant === 'b';
   const queueRulesEnabled = false;
   const queuePageSize = DEFAULT_QUEUE_PAGE_SIZE;
@@ -3513,7 +3597,9 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
     baseUrl,
     filters,
     smartSearch: smartSearch.trim(),
-  }), [baseUrl, filters, smartSearch]);
+    grupoAtual,
+    grupoBackend: selectedBackendGroupId(grupos, grupoAtual),
+  }), [baseUrl, filters, smartSearch, grupos, grupoAtual]);
   const [debouncedServerFilterKey, setDebouncedServerFilterKey] = useState(serverFilterKey);
   const [filaData, setFilaData] = useState({
     data: null,
@@ -3528,11 +3614,11 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
 
   const filterOptions = useMemo(() => {
     return {
-      empresas: filterGroupAliases(getQueueCompanyOptions(filaData.data, filaData.items), grupoAtual, alias => alias),
+      empresas: filterLegacyGroupItems(getQueueCompanyOptions(filaData.data, filaData.items), grupos, grupoAtual, alias => alias),
       responsaveis: getQueueResponsibleOptions(filaData.data, filaData.items),
       incidencias_iss: getQueueIssIncidenceOptions(filaData.data),
     };
-  }, [filaData.data, filaData.items, grupoAtual]);
+  }, [filaData.data, filaData.items, grupos, grupoAtual]);
 
   const visibleItems = filaData.items;
   const queueVirtual = useVirtualRows(visibleItems, { rowHeight: 52, overscan: 10 });
@@ -3603,7 +3689,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
         filters,
         smartSearch,
       });
-      const queuePath = `/nfse?${q.toString()}`;
+      const queuePath = appendGroupParam(`/nfse?${q.toString()}`, grupos, grupoAtual);
       const cachedQueueData = page === 1 && !forceRefresh
         ? readApiCache(apiCacheKey(baseUrl, queuePath), CRITICAL_LIST_CACHE_TTL_MS)
         : null;
@@ -3647,7 +3733,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
       }));
 
       try {
-        const data = await api(baseUrl, queuePath, {
+        const data = await apiWithGroupFallback(baseUrl, `/nfse?${q.toString()}`, grupos, grupoAtual, {
           signal: controller.signal,
           cache: forceRefresh ? 'no-store' : undefined,
           cacheTtl: CRITICAL_LIST_CACHE_TTL_MS,
@@ -3701,7 +3787,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
       cancelled = true;
       controller.abort();
     };
-  }, [baseUrl, page, queuePageSize, debouncedServerFilterKey, queueReloadTick]);
+  }, [baseUrl, page, queuePageSize, debouncedServerFilterKey, queueReloadTick, grupos, grupoAtual]);
 
   useEffect(() => {
     queueLoadMorePendingRef.current = false;
@@ -3912,7 +3998,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
         includePagination: false,
       });
 
-      const query = q.toString();
+      const query = appendGroupParam(`/nfse/exportar-fila-detalhada${q.toString() ? `?${q.toString()}` : ''}`, grupos, grupoAtual).split('?')[1] || '';
       const res = await fetch(`${baseUrl}/nfse/exportar-fila-detalhada${query ? `?${query}` : ''}`);
       if (!res.ok) {
         let message = `HTTP ${res.status}`;
@@ -4426,7 +4512,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, variant = 'a
   );
 }
 
-function NFSePage({ baseUrl, toast, grupoAtual }) {
+function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
   const [empresaSelecionada, setEmpresaSelecionada] = useState(null);
   const [busca, setBusca] = useState('');
   const buscaDebounced = useDebouncedValue(busca, 180);
@@ -4440,17 +4526,19 @@ function NFSePage({ baseUrl, toast, grupoAtual }) {
   const [showAllGroups, setShowAllGroups] = useState(false);
   const forceAllNfseRefreshRef = useRef(false);
   const forceNfseListRefreshRef = useRef(false);
+  const effectiveGroupId = showAllGroups ? ALL_GROUP_ID : grupoAtual;
+  const selectedGroup = findGroupMeta(grupos, grupoAtual);
 
   // Busca resumida de todas as notas para montar o painel de empresas
   const allNfse = useAsync(signal => {
     const forceRefresh = forceAllNfseRefreshRef.current;
     if (forceRefresh) forceAllNfseRefreshRef.current = false;
-    return api(baseUrl, '/nfse?page=1&page_size=500', {
+    return apiWithGroupFallback(baseUrl, '/nfse?page=1&page_size=500', grupos, effectiveGroupId, {
       signal,
       cache: forceRefresh ? 'no-store' : undefined,
       cacheTtl: CRITICAL_LIST_CACHE_TTL_MS,
     });
-  }, [baseUrl]);
+  }, [baseUrl, grupos, effectiveGroupId]);
 
   // Notas da empresa selecionada
   const nfseList = useAsync(signal => {
@@ -4459,12 +4547,12 @@ function NFSePage({ baseUrl, toast, grupoAtual }) {
     if (forceRefresh) forceNfseListRefreshRef.current = false;
     const q = new URLSearchParams({ page, page_size: pageSize, cert_alias: empresaSelecionada });
     Object.entries(debouncedFilters).forEach(([k, v]) => { if (v !== '' && v !== false) q.set(k, String(v)); });
-    return api(baseUrl, `/nfse?${q}`, {
+    return apiWithGroupFallback(baseUrl, `/nfse?${q}`, grupos, effectiveGroupId, {
       signal,
       cache: forceRefresh ? 'no-store' : undefined,
       cacheTtl: CRITICAL_LIST_CACHE_TTL_MS,
     });
-  }, [baseUrl, empresaSelecionada, page, pageSize, JSON.stringify(debouncedFilters)]);
+  }, [baseUrl, empresaSelecionada, page, pageSize, JSON.stringify(debouncedFilters), grupos, effectiveGroupId]);
 
   // Agrupa por cert_alias
   const empresas = useMemo(() => {
@@ -4481,13 +4569,12 @@ function NFSePage({ baseUrl, toast, grupoAtual }) {
     return Object.values(map).sort((a, b) => a.nome.localeCompare(b.nome));
   }, [allNfse.data]);
 
-  const groupFilterInfo = useMemo(
-    () => getGroupFilterState(empresas, grupoAtual, item => item.alias),
-    [empresas, grupoAtual]
+  const empresasVisiveis = useMemo(
+    () => filterLegacyGroupItems(empresas, grupos, effectiveGroupId, item => item.alias),
+    [empresas, grupos, effectiveGroupId]
   );
-  const groupFilterActive = groupFilterInfo.active && !showAllGroups;
-  const empresasVisiveis = groupFilterActive ? groupFilterInfo.items : empresas;
-  const groupFilterEmpty = groupFilterActive && groupFilterInfo.empty;
+  const groupFilterActive = !!selectedBackendGroupId(grupos, effectiveGroupId) || isLegacyGroupMode(grupos, effectiveGroupId);
+  const groupFilterEmpty = groupFilterActive && empresas.length === 0;
 
   const empresasFiltradas = useMemo(() => {
     const t = buscaDebounced.trim().toLowerCase();
@@ -4571,7 +4658,7 @@ function NFSePage({ baseUrl, toast, grupoAtual }) {
           {allNfse.error ? <Alert type="error">{allNfse.error}</Alert> : null}
           {groupFilterEmpty ? (
             <Alert type="info">
-              Nenhum item neste grupo. O backend retornou {groupFilterInfo.totalCount} empresa(s), mas nenhuma combina com {getGroupLabel(grupoAtual)}.
+              {groupHasNoCertificates(selectedGroup) ? 'Este grupo nÃ£o possui certificados vinculados.' : 'Nenhum item encontrado para este grupo.'}
               <button className="btn btn-ghost btn-xs" style={{ marginLeft: 10 }} onClick={() => setShowAllGroups(true)}>
                 Ver todos
               </button>
@@ -4959,16 +5046,19 @@ function RelatorioPage({ baseUrl, toast }) {
 }
 
 // ── Page: Certificados ───────────────────────────────────────
-function CertificadosPage({ baseUrl, toast, grupoAtual }) {
+function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
   const forceCertRefreshRef = useRef(false);
+  const [showAllGroups, setShowAllGroups] = useState(false);
+  const effectiveGroupId = showAllGroups ? ALL_GROUP_ID : grupoAtual;
+  const selectedGroup = findGroupMeta(grupos, grupoAtual);
   const list = useAsync(signal => {
     const forceRefresh = forceCertRefreshRef.current;
     if (forceRefresh) forceCertRefreshRef.current = false;
-    return api(baseUrl, '/certificados', {
+    return apiWithGroupFallback(baseUrl, '/certificados', grupos, effectiveGroupId, {
       signal,
       cache: forceRefresh ? 'no-store' : undefined,
     });
-  }, [baseUrl]);
+  }, [baseUrl, grupos, effectiveGroupId]);
   const [modal, setModal] = useState(null); // null | 'new' | 'edit' | 'pass'
   const [current, setCurrent] = useState(null);
   const [confirm, setConfirm] = useState(null);
@@ -4977,8 +5067,8 @@ function CertificadosPage({ baseUrl, toast, grupoAtual }) {
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
   const certificados = useMemo(
-    () => extractResponseList(list.data, ['certificados', 'items', 'data', 'results', 'rows']),
-    [list.data]
+    () => filterLegacyGroupItems(extractResponseList(list.data, ['certificados', 'items', 'data', 'results', 'rows']), grupos, effectiveGroupId),
+    [list.data, grupos, effectiveGroupId]
   );
   const certificadosTotal = extractResponseTotal(list.data, certificados.length);
   const refreshCertificados = () => {
@@ -4986,6 +5076,10 @@ function CertificadosPage({ baseUrl, toast, grupoAtual }) {
     forceCertRefreshRef.current = true;
     list.reload().catch(() => {});
   };
+
+  useEffect(() => {
+    setShowAllGroups(false);
+  }, [grupoAtual]);
 
   useEffect(() => {
     devLog('certificados render', {
@@ -5023,6 +5117,8 @@ function CertificadosPage({ baseUrl, toast, grupoAtual }) {
     try {
       const fd = new FormData();
       ['alias', 'client_name', 'password'].forEach(k => fd.append(k, form[k]));
+      const selectedGroupId = selectedBackendGroupId(grupos, effectiveGroupId);
+      if (selectedGroupId) fd.append('grupo_id', selectedGroupId);
       fd.append('file', form.file);
       const resp = await api(baseUrl, '/certificados', { method: 'POST', body: fd });
       if (resp && (resp.ok === false || resp.success === false || resp.error)) {
@@ -5075,6 +5171,14 @@ function CertificadosPage({ baseUrl, toast, grupoAtual }) {
         }
       />
       {list.error ? <Alert type="error">{list.error}</Alert> : null}
+      {!list.loading && certificados.length === 0 && selectedBackendGroupId(grupos, effectiveGroupId) ? (
+        <Alert type="info">
+          {groupHasNoCertificates(selectedGroup) ? 'Este grupo nÃ£o possui certificados vinculados.' : 'Nenhum certificado encontrado para este grupo.'}
+          <button className="btn btn-ghost btn-xs" style={{ marginLeft: 10 }} onClick={() => setShowAllGroups(true)}>
+            Ver todos
+          </button>
+        </Alert>
+      ) : null}
 
       <div className="card">
         <div className="card-header">
@@ -5194,8 +5298,8 @@ function CertificadosPage({ baseUrl, toast, grupoAtual }) {
 }
 
 // ── Page: Credenciais ────────────────────────────────────────
-function CredenciaisPage({ baseUrl, toast, grupoAtual }) {
-  const list = useAsync(signal => api(baseUrl, '/credenciais', { signal }), [baseUrl]);
+function CredenciaisPage({ baseUrl, toast, grupoAtual, grupos }) {
+  const list = useAsync(signal => apiWithGroupFallback(baseUrl, '/credenciais', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
   const [modal, setModal] = useState(null);
   const [current, setCurrent] = useState(null);
   const [confirm, setConfirm] = useState(null);
@@ -5203,8 +5307,8 @@ function CredenciaisPage({ baseUrl, toast, grupoAtual }) {
   const [passForm, setPassForm] = useState({ password: '', confirm: '' });
   const [saving, setSaving] = useState(false);
   const credenciaisVisiveis = useMemo(
-    () => filterGroupAliases(list.data?.credenciais || [], grupoAtual),
-    [list.data?.credenciais, grupoAtual]
+    () => filterLegacyGroupItems(list.data?.credenciais || [], grupos, grupoAtual),
+    [list.data?.credenciais, grupos, grupoAtual]
   );
 
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
@@ -5442,7 +5546,8 @@ function ConfiguracoesPage({ baseUrl, setBaseUrl, toast }) {
 }
 
 // ── App Shell ────────────────────────────────────────────────
-function GroupSelectionScreen({ onSelect }) {
+function GroupSelectionScreen({ groups, loading, error, onSelect }) {
+  const options = Array.isArray(groups) && groups.length ? groups : [ALL_GROUP_OPTION];
   return (
     <div style={{
       minHeight: '100vh',
@@ -5458,11 +5563,13 @@ function GroupSelectionScreen({ onSelect }) {
         </div>
         <div className="card-body">
           <div style={{ display: 'grid', gap: 12 }}>
-            {GROUP_OPTIONS.map(group => (
+            {loading ? <Loading label="Carregando grupos..." /> : null}
+            {error ? <Alert type="info">Nao foi possivel carregar /grupos. Usando fallback temporario.</Alert> : null}
+            {!loading && options.map(group => (
               <button
-                key={group.key}
+                key={group.id}
                 className="btn btn-ghost"
-                onClick={() => onSelect(group.key)}
+                onClick={() => onSelect(group.id)}
                 style={{
                   justifyContent: 'space-between',
                   padding: '18px 20px',
@@ -5472,12 +5579,15 @@ function GroupSelectionScreen({ onSelect }) {
                 }}
               >
                 <span>{group.label}</span>
+                {group.certCount !== null && group.certCount !== undefined ? (
+                  <span style={{ color: 'var(--text-3)', fontSize: 12 }}>{group.certCount} certificado(s)</span>
+                ) : null}
                 <span style={{ color: 'var(--accent)' }}>Entrar</span>
               </button>
             ))}
           </div>
           <div style={{ marginTop: 16, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
-            Fase 1: seleção visual de grupo, não é segurança real. Segurança real será feita no backend em fase futura.
+            Os grupos reais sao carregados do backend. O fallback legado aparece apenas se /grupos estiver indisponivel.
           </div>
         </div>
       </div>
@@ -5495,12 +5605,17 @@ function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopSidebarVisible, setDesktopSidebarVisible] = useState(true);
   const { toasts, toast } = useToast();
+  const gruposRequest = useAsync(signal => api(baseUrl, '/grupos', { signal, cacheTtl: 120_000 }), [baseUrl]);
+  const grupos = useMemo(() => (
+    gruposRequest.error ? LEGACY_GROUP_OPTIONS : normalizeGroupsPayload(gruposRequest.data)
+  ), [gruposRequest.data, gruposRequest.error]);
 
   const selecionarGrupo = groupKey => {
-    const next = normalizeGroupKey(groupKey);
+    const next = normalizeStoredGroupId(groupKey);
     if (!next) return;
     clearApiCache();
-    localStorage.setItem(GROUP_STORAGE_KEY, next);
+    localStorage.setItem(GROUP_ID_STORAGE_KEY, next);
+    localStorage.removeItem(GROUP_STORAGE_KEY);
     setActive('dashboard');
     setMobileOpen(false);
     setDesktopSidebarVisible(true);
@@ -5510,6 +5625,7 @@ function App() {
 
   const trocarGrupo = () => {
     clearApiCache();
+    localStorage.removeItem(GROUP_ID_STORAGE_KEY);
     localStorage.removeItem(GROUP_STORAGE_KEY);
     setActive('dashboard');
     setMobileOpen(false);
@@ -5517,6 +5633,14 @@ function App() {
     setApiStatus('idle');
     setGrupoAtual('');
   };
+
+  useEffect(() => {
+    if (!grupoAtual || gruposRequest.loading) return;
+    if (!findGroupMeta(grupos, grupoAtual)) {
+      localStorage.removeItem(GROUP_ID_STORAGE_KEY);
+      setGrupoAtual('');
+    }
+  }, [grupoAtual, grupos, gruposRequest.loading]);
 
   useEffect(() => {
     const cleaned = normalizeBaseUrl(baseUrl);
@@ -5569,8 +5693,8 @@ function App() {
 
   const warmDefaultQueue = useCallback(() => {
     if (!baseUrl) return;
-    prefetchDefaultQueue(baseUrl);
-  }, [baseUrl]);
+    prefetchDefaultQueue(baseUrl, grupos, grupoAtual);
+  }, [baseUrl, grupos, grupoAtual]);
 
   useEffect(() => {
     if (!grupoAtual || !baseUrl) return undefined;
@@ -5592,7 +5716,18 @@ function App() {
   if (!grupoAtual) {
     return (
       <>
-        <GroupSelectionScreen onSelect={selecionarGrupo} />
+        <GroupSelectionScreen groups={grupos} loading={gruposRequest.loading} error={gruposRequest.error} onSelect={selecionarGrupo} />
+        <ToastContainer toasts={toasts} />
+      </>
+    );
+  }
+
+  if (gruposRequest.loading && !gruposRequest.error) {
+    return (
+      <>
+        <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
+          <Loading label="Carregando grupos..." />
+        </div>
         <ToastContainer toasts={toasts} />
       </>
     );
@@ -5638,7 +5773,7 @@ function App() {
 
       <div className="sidebar-footer">
         <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{getGroupLabel(grupoAtual)}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{getGroupLabel(grupos, grupoAtual)}</div>
           <button className="btn btn-ghost btn-sm" onClick={trocarGrupo} style={{ justifyContent: 'center' }}>
             Trocar grupo
           </button>
@@ -5652,7 +5787,7 @@ function App() {
   );
 
   const renderPage = () => {
-    const pageProps = { baseUrl, toast, grupoAtual };
+    const pageProps = { baseUrl, toast, grupoAtual, grupos };
     switch (renderedActive) {
       case 'dashboard':
         return <DashboardPage {...pageProps} navigate={navigate} />;
