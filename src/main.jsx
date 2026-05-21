@@ -131,10 +131,10 @@ function isKnownDeadApiBaseUrl(url) {
   }
 }
 
-function isAllowedApiBaseUrl(url) {
+function isAllowedApiBaseUrl(url, { allowRelative = IS_DEV } = {}) {
   const normalized = normalizeBaseUrl(url);
   if (!normalized) return false;
-  if (normalized.startsWith('/')) return true;
+  if (normalized.startsWith('/')) return allowRelative;
   return isHttpsUrl(normalized)
     && !isLocalhostUrl(normalized)
     && !isRailwayInternalUrl(normalized)
@@ -149,7 +149,10 @@ function resolveApiBaseUrl() {
   const stored = normalizeBaseUrl(localStorage.getItem(API_URL_STORAGE_KEY));
   if (!stored) return fallback;
   if (IS_DEV && stored === DEFAULT_API_BASE_URL && fallback === DEV_API_PROXY_BASE_URL) return fallback;
-  if (!isAllowedApiBaseUrl(stored)) return fallback;
+  if (!isAllowedApiBaseUrl(stored)) {
+    localStorage.removeItem(API_URL_STORAGE_KEY);
+    return fallback;
+  }
   return stored;
 }
 
