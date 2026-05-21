@@ -194,6 +194,12 @@ function readCurrentGroup() {
   return storedId;
 }
 
+function clearStoredGroupSelection() {
+  localStorage.removeItem(GROUP_ID_STORAGE_KEY);
+  localStorage.removeItem(GROUP_LABEL_STORAGE_KEY);
+  localStorage.removeItem(GROUP_SLUG_STORAGE_KEY);
+}
+
 function normalizeBackendGroup(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const id = String(firstDefinedValue(raw.id, raw.grupo_id, raw.uuid, raw.codigo) ?? '').trim();
@@ -1157,6 +1163,53 @@ function StatusBadge({ value }) {
 
 function Alert({ type = 'info', children }) {
   return <div className={`alert alert-${type}`}>{children}</div>;
+}
+
+class PortalErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('[portal] render error', { error, info });
+  }
+
+  handleChangeGroup = () => {
+    clearStoredGroupSelection();
+    window.location.reload();
+  };
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'grid',
+        placeItems: 'center',
+        padding: 24,
+        background: 'var(--bg)',
+      }}>
+        <div className="card" style={{ width: '100%', maxWidth: 560 }}>
+          <div className="card-header">
+            <span className="card-title">Nao foi possivel carregar o portal para este grupo</span>
+          </div>
+          <div className="card-body" style={{ display: 'grid', gap: 12 }}>
+            <Alert type="error">
+              Ocorreu um erro ao renderizar a tela atual. Troque o grupo e tente novamente.
+            </Alert>
+            <button className="btn btn-primary" onClick={this.handleChangeGroup} style={{ justifyContent: 'center' }}>
+              Trocar grupo
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 }
 
 function Modal({ open, title, onClose, wide, xl, children }) {
@@ -5668,9 +5721,7 @@ function App() {
 
   const trocarGrupo = () => {
     clearApiCache();
-    localStorage.removeItem(GROUP_ID_STORAGE_KEY);
-    localStorage.removeItem(GROUP_LABEL_STORAGE_KEY);
-    localStorage.removeItem(GROUP_SLUG_STORAGE_KEY);
+    clearStoredGroupSelection();
     setActive('dashboard');
     setMobileOpen(false);
     setDesktopSidebarVisible(true);
@@ -5683,9 +5734,7 @@ function App() {
     if (gruposRequest.error) return;
     const selectedGroup = findGroupMeta(grupos, grupoAtual);
     if (!selectedGroup) {
-      localStorage.removeItem(GROUP_ID_STORAGE_KEY);
-      localStorage.removeItem(GROUP_LABEL_STORAGE_KEY);
-      localStorage.removeItem(GROUP_SLUG_STORAGE_KEY);
+      clearStoredGroupSelection();
       setGrupoAtual('');
       return;
     }
@@ -5805,6 +5854,22 @@ function App() {
         <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
           <Loading label="Carregando grupos..." />
         </div>
+        <ToastContainer toasts={toasts} />
+      </>
+    );
+  }
+
+  const selectedGroupMeta = findGroupMeta(grupos, grupoAtual);
+  if (!selectedGroupMeta) {
+    return (
+      <>
+        <GroupSelectionScreen
+          groups={grupos}
+          loading={false}
+          error=""
+          onSelect={selecionarGrupo}
+          onRetry={() => gruposRequest.reload().catch(() => {})}
+        />
         <ToastContainer toasts={toasts} />
       </>
     );
@@ -5968,5 +6033,9 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <PortalErrorBoundary>
+    <App />
+  </PortalErrorBoundary>
+);
 
