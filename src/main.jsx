@@ -397,6 +397,45 @@ function mapQueueItem(row) {
   };
 }
 
+function getExportCompetencia(item) {
+  const value = firstTextValue(item.queue_competencia, item.competencia);
+  return value === '—' || value.includes('€') ? firstTextValue(item.competencia) : value;
+}
+
+function mapDetailedExportRow(item) {
+  return {
+    numero_nota: item.queue_numero_nota || item.numero_documento || '',
+    chave_acesso: item.chave_acesso || '',
+    data_emissao: item.data_emissao || '',
+    competencia: getExportCompetencia(item),
+    empresa: item.queue_empresa || clientName(item.cert_alias || item.certificado || ''),
+    prestador: item.queue_prestador || item.razao_social || '',
+    cnpj_prestador: firstTextValue(item.cnpj_prestador, item.prestador_cnpj, item.cnpj_cpf_prestador, item.prestador_cpf_cnpj, item.cnpj_cpf),
+    cnpj_tomador: firstTextValue(item.cnpj_tomador, item.tomador_cnpj, item.cpf_cnpj_tomador, item.tomador_cpf_cnpj, item.documento_tomador, item.tomador_documento, item.cnpj_cpf_tomador, item.cnpj_cpf),
+    razao_social_tomador: firstTextValue(item.razao_social_tomador, item.tomador_razao_social, item.nome_tomador, item.tomador_nome, item.tomador, item.parte_tomador_nome),
+    municipio: item.municipio || '',
+    codigo_servico: item.codigo_servico || '',
+    descricao_servico: item.descricao_servico || '',
+    valor_total: item.valor_total ?? '',
+    valor_liquido: item.valor_liquido ?? '',
+    status_nota: item.queue_status_nota || '',
+    status_nota_pdf: getQueueDocumentStatusLabel(item.status_documental_pdf),
+    simples_nacional_xml: item.simples_nacional || '',
+    consulta_simples_api: item.consulta_simples_api || '',
+    status_simples_nacional: item.status_simples_nacional || '',
+    incidencia_iss: getQueueIssIncidenceValue(item),
+    status_fila: item.queue_status || '',
+    divergencia: item.queue_divergencia || '',
+    prioridade: normalizeQueuePriority(item.queue_prioridade) === 'alta' ? 'Alta' : normalizeQueuePriority(item.queue_prioridade) === 'media' ? 'Media' : 'Baixa',
+    responsavel: item.queue_responsavel || '',
+    conferencia: queueConferenceStatus(item.queue_responsavel),
+    observacao_interna: item.observacao_interna || '',
+    alertas_fiscais: item.alertas_fiscais || '',
+    entrada: fmtDate(item.queue_entrada),
+    sla: item.queue_sla?.label || '',
+  };
+}
+
 function asQueueMetaArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -406,6 +445,11 @@ function firstDefinedValue(...values) {
     if (value !== undefined && value !== null) return value;
   }
   return undefined;
+}
+
+function firstTextValue(...values) {
+  const value = firstDefinedValue(...values);
+  return String(value ?? '').trim();
 }
 
 function extractResponseList(payload, preferredKeys = ['items', 'data', 'results', 'rows'], depth = 0) {
@@ -3881,17 +3925,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
   }, [visibleItems]);
 
   const exportQueueDetailedRows = useMemo(() => {
-    return visibleItems.map(item => ({
-      ...item,
-      competencia: item.queue_competencia === '—' ? (item.competencia || '') : item.queue_competencia,
-      status_nota: item.queue_status_nota || '',
-      status_nota_pdf: getQueueDocumentStatusLabel(item.status_documental_pdf),
-      status: item.queue_status || '',
-      prioridade: normalizeQueuePriority(item.queue_prioridade) === 'alta' ? 'Alta' : normalizeQueuePriority(item.queue_prioridade) === 'media' ? 'Media' : 'Baixa',
-      responsavel: item.queue_responsavel || '',
-      conferencia: queueConferenceStatus(item.queue_responsavel),
-      observacao_interna: item.observacao_interna || '',
-    }));
+    return visibleItems.map(mapDetailedExportRow);
   }, [visibleItems]);
 
   const fetchAllQueueItems = async () => {
@@ -4018,17 +4052,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
     try {
       const items = await fetchAllQueueItems();
       if (!items.length) throw new Error('Nenhuma nota encontrada para exportar.');
-      const rows = items.map(item => ({
-        ...item,
-        competencia: item.queue_competencia === 'â€”' ? (item.competencia || '') : item.queue_competencia,
-        status_nota: item.queue_status_nota || '',
-        status_nota_pdf: getQueueDocumentStatusLabel(item.status_documental_pdf),
-        status: item.queue_status || '',
-        prioridade: normalizeQueuePriority(item.queue_prioridade) === 'alta' ? 'Alta' : normalizeQueuePriority(item.queue_prioridade) === 'media' ? 'Media' : 'Baixa',
-        responsavel: item.queue_responsavel || '',
-        conferencia: queueConferenceStatus(item.queue_responsavel),
-        observacao_interna: item.observacao_interna || '',
-      }));
+      const rows = items.map(mapDetailedExportRow);
       dlCSV(rows, `${isVariantB ? 'fila_trabalho_b' : 'fila_trabalho'}_detalhada_${today()}.csv`);
       toast(`ExportaÃ§Ã£o detalhada gerada com ${rows.length} nota(s).`, 'success');
     } catch (e) {
