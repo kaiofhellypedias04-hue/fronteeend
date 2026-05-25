@@ -5548,7 +5548,7 @@ function CredenciaisPage({ baseUrl, toast, grupoAtual, grupos }) {
   );
 }
 
-function LoginPage({ baseUrl, toast }) {
+function LoginPage({ baseUrl, toast, onAuthenticated }) {
   const [mode, setMode] = useState('login');
   const [nome, setNome] = useState('');
   const [email, setEmail] = useState('');
@@ -5593,8 +5593,9 @@ function LoginPage({ baseUrl, toast }) {
         setPassword('');
         setConfirmPassword('');
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
         if (error) throw error;
+        if (data?.session) onAuthenticated?.(data.session);
         toast('Login realizado com sucesso.', 'success');
       }
     } catch (e) {
@@ -6219,7 +6220,7 @@ function App() {
   if (!session) {
     return (
       <>
-        <LoginPage baseUrl={baseUrl} toast={toast} />
+        <LoginPage baseUrl={baseUrl} toast={toast} onAuthenticated={setSession} />
         <ToastContainer toasts={toasts} />
       </>
     );
