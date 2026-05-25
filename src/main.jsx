@@ -1353,6 +1353,7 @@ function getQueueDefaultFilters() {
 }
 
 const DEFAULT_QUEUE_PAGE_SIZE = 50;
+const DETAILED_EXPORT_PAGE_SIZE = 1000;
 
 function buildQueueSearchParams({ page = 1, pageSize = DEFAULT_QUEUE_PAGE_SIZE, filters = getQueueDefaultFilters(), smartSearch = '', includePagination = true } = {}) {
   const q = new URLSearchParams();
@@ -3894,12 +3895,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
   }, [visibleItems]);
 
   const fetchAllQueueItems = async () => {
-    const loadedTotal = Number(filaData.total);
-    const pageSizeForExport = Math.max(
-      Number.isFinite(loadedTotal) && loadedTotal > 0 ? loadedTotal : 0,
-      visibleItems.length,
-      5000
-    );
+    const pageSizeForExport = DETAILED_EXPORT_PAGE_SIZE;
     const q = buildQueueSearchParams({
       page: 1,
       pageSize: pageSizeForExport,
