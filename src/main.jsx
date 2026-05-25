@@ -5595,7 +5595,9 @@ function LoginPage({ baseUrl, toast, onAuthenticated }) {
       } else {
         const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
         if (error) throw error;
-        if (data?.session) onAuthenticated?.(data.session);
+        const sessionResult = data?.session || (await supabase.auth.getSession())?.data?.session || null;
+        if (!sessionResult) throw new Error('Login aceito, mas a sessao nao foi criada. Confirme o e-mail ou tente novamente.');
+        onAuthenticated?.(sessionResult);
         toast('Login realizado com sucesso.', 'success');
       }
     } catch (e) {
@@ -5962,7 +5964,7 @@ function App() {
     let mounted = true;
     supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      setSession(data?.session || null);
+      setSession(prev => data?.session || prev || null);
       setIsLoadingAuth(false);
     });
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
