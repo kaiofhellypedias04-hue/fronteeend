@@ -197,41 +197,6 @@ function readCurrentGroup() {
   return LOCAL_GROUP.id;
 }
 
-function clearStoredGroupSelection() {
-  localStorage.removeItem(GROUP_ID_STORAGE_KEY);
-  localStorage.removeItem(GROUP_LABEL_STORAGE_KEY);
-  localStorage.removeItem(GROUP_SLUG_STORAGE_KEY);
-}
-
-function normalizeBackendGroup(raw) {
-  if (!raw || typeof raw !== 'object') return null;
-  const id = String(firstDefinedValue(raw.id, raw.uuid, raw.codigo) ?? '').trim();
-  if (!id) return null;
-  const label = String(firstDefinedValue(raw.nome, raw.name, raw.label, raw.descricao, raw.description, id) ?? id).trim();
-  const certCountRaw = firstDefinedValue(
-    raw.certificados_count,
-    raw.total_certificados,
-    raw.quantidade_certificados,
-    raw.certificados?.length,
-    raw.count
-  );
-  const certCount = Number(certCountRaw);
-  return {
-    ...raw,
-    id,
-    label: label || id,
-    slug: String(firstDefinedValue(raw.slug, raw.key, raw.codigo, id) ?? id).trim(),
-    certCount: Number.isFinite(certCount) ? certCount : null,
-  };
-}
-
-function normalizeGroupsPayload(payload) {
-  const groups = extractResponseList(payload, ['grupos', 'items', 'data', 'results', 'rows'])
-    .map(normalizeBackendGroup)
-    .filter(Boolean);
-  return groups;
-}
-
 function findGroupMeta(groups, groupId) {
   const id = normalizeStoredGroupId(groupId);
   if (!id || id === LOCAL_GROUP.id) return LOCAL_GROUP;
@@ -256,10 +221,6 @@ function groupQueryEntries(groups, groupId) {
 
 async function apiWithGroup(baseUrl, path, groups, groupId, opts = {}) {
   return api(baseUrl, path, opts);
-}
-
-function groupHasNoCertificates(group) {
-  return !!group && group.certCount === 0;
 }
 
 function devLog(label, details = {}) {
@@ -2324,7 +2285,6 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
 
 // ── Page: Execução ───────────────────────────────────────────
 function ExecucaoPage({ baseUrl, toast, grupoAtual, grupos }) {
-  const selectedGroup = findGroupMeta(grupos, grupoAtual);
   const certs = useAsync(signal => apiWithGroup(baseUrl, '/certificados', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
   const creds = useAsync(signal => apiWithGroup(baseUrl, '/credenciais', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
 
@@ -2366,7 +2326,7 @@ function ExecucaoPage({ baseUrl, toast, grupoAtual, grupos }) {
     ? (creds.data?.credenciais || [])
     : (certs.data?.certificados || []);
   const lista = listaCompleta;
-  const groupEmptyMessage = groupHasNoCertificates(selectedGroup) && !isCred;
+  const groupEmptyMessage = false;
 
   const toggle = alias => setForm(f => ({
     ...f,
@@ -3239,7 +3199,6 @@ function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
   const [actionLoadingId, setActionLoadingId]       = useState(null);
   const [confirmAction, setConfirmAction]           = useState(null);
 
-  const selectedGroup = findGroupMeta(grupos, grupoAtual);
   const allProcs = useAsync(signal => apiWithGroup(baseUrl, '/processos?page=1&page_size=500', grupos, grupoAtual, { signal, cacheTtl: 60_000 }), [baseUrl, grupos, grupoAtual]);
 
   const procList = useAsync(signal => {
@@ -3344,24 +3303,10 @@ function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
   const executeConfirmedAction = async () => {
     if (!confirmAction?.process?.id) return;
 
-    const { type, process } = confirmAction;
+    const { process } = confirmAction;
     setActionLoadingId(process.id);
     try {
       toast('Cancelar ou excluir processos nao esta disponivel no Backend_Auditoria.', 'error');
-      return;
-      const data = type === 'cancel'
-        ? await apiWithGroup(baseUrl, `/processos/${process.id}`, grupos, grupoAtual, { method: 'GET' })
-        : await apiWithGroup(baseUrl, `/processos/${process.id}`, grupos, grupoAtual, { method: 'GET' });
-
-      if (type === 'cancel') {
-        const status = normalizeProcessStatus(data?.status || 'cancelled');
-        toast(status === 'cancelada' ? 'Processo cancelado com sucesso.' : 'Solicitação de cancelamento enviada com sucesso.', 'success');
-        await reloadProcessViews(process.id);
-      } else {
-        toast(data?.message || 'Processo excluído com sucesso.', 'success');
-        setSelected(current => current?.proc?.id === process.id ? null : current);
-        await reloadProcessViews(process.id, { closeOnMissing: true });
-      }
     } catch (e) {
       toast(e.message, 'error');
     } finally {
@@ -4549,8 +4494,6 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
   const debouncedFilters = useDebouncedValue(filters, 350);
   const forceAllNfseRefreshRef = useRef(false);
   const forceNfseListRefreshRef = useRef(false);
-  const selectedGroup = findGroupMeta(grupos, grupoAtual);
-
   // Busca resumida de todas as notas para montar o painel de empresas
   const allNfse = useAsync(signal => {
     const forceRefresh = forceAllNfseRefreshRef.current;
@@ -4671,7 +4614,7 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
           {allNfse.error ? <Alert type="error">{allNfse.error}</Alert> : null}
           {groupFilterEmpty ? (
             <Alert type="info">
-              {groupHasNoCertificates(selectedGroup) ? 'Nenhum certificado vinculado.' : 'Nenhum item encontrado.'}
+              Nenhum item encontrado.
             </Alert>
           ) : null}
 
@@ -5058,7 +5001,6 @@ function RelatorioPage({ baseUrl, toast, grupoAtual, grupos }) {
 // ── Page: Certificados ───────────────────────────────────────
 function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
   const forceCertRefreshRef = useRef(false);
-  const selectedGroup = findGroupMeta(grupos, grupoAtual);
   const list = useAsync(signal => {
     const forceRefresh = forceCertRefreshRef.current;
     if (forceRefresh) forceCertRefreshRef.current = false;
@@ -5175,7 +5117,7 @@ function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
       {list.error ? <Alert type="error">{list.error}</Alert> : null}
       {!list.loading && certificados.length === 0 ? (
         <Alert type="info">
-          {groupHasNoCertificates(selectedGroup) ? 'Este grupo nÃ£o possui certificados vinculados.' : 'Nenhum certificado encontrado para este grupo.'}
+          Nenhum certificado encontrado.
         </Alert>
       ) : null}
 
@@ -5662,8 +5604,6 @@ function App() {
     setMobileOpen(false);
     React.startTransition(() => setActive(k));
   }, [warmDefaultQueue]);
-
-  const selectedGroupMeta = findGroupMeta(grupos, grupoAtual);
 
   const isQueuePageActive = active === 'fila_trabalho' || active === 'fila_trabalho_b';
 
