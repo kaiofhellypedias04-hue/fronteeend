@@ -4,6 +4,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
+import { isSupabaseConfigured, supabase } from './lib/supabase.js';
 import '../constants/app.js';
 import '../utils/format.js';
 import '../utils/date.js';
@@ -41,6 +42,18 @@ if (IS_DEV) {
   console.info('[main.jsx] dev bundle loaded', { loadedAt: new Date().toISOString() });
 }
 
+const authContext = {
+  accessToken: '',
+  selectedEmpresaId: '',
+  onUnauthorized: null,
+};
+
+function setApiAuthContext({ accessToken = '', selectedEmpresaId = '', onUnauthorized = null } = {}) {
+  authContext.accessToken = accessToken || '';
+  authContext.selectedEmpresaId = selectedEmpresaId || '';
+  authContext.onUnauthorized = onUnauthorized;
+}
+
 // ── Constantes ──────────────────────────────────────────────
 const MENU = [
   { key: 'dashboard',    label: 'Dashboard',       section: 'visão geral',  icon: IconDashboard },
@@ -53,18 +66,15 @@ const MENU = [
   { key: 'relatorio',    label: 'Relatório',        section: 'dados',        icon: IconChart },
   { key: 'certificados', label: 'Certificados',     section: 'configuração', icon: IconCert },
   { key: 'credenciais',  label: 'Credenciais',      section: 'configuração', icon: IconKey },
-  { key: 'configuracoes',label: 'Configurações',    section: 'configuração', icon: IconSettings },
 ];
 
-const API_URL_STORAGE_KEY = 'nfse_url';
 const GROUP_ID_STORAGE_KEY = 'contexto_atual';
 const GROUP_LABEL_STORAGE_KEY = 'grupo_nome_atual';
 const GROUP_SLUG_STORAGE_KEY = 'grupo_slug_atual';
+const EMPRESA_ID_STORAGE_KEY = 'nfse_empresa_ativa';
 const LOCAL_GROUP = { id: 'geral', label: 'Geral', slug: 'geral', certCount: null };
 
-const RAILWAY_API_BASE_URL = 'https://backeend-production-5a65.up.railway.app';
-const DEV_API_PROXY_BASE_URL = '/api';
-const DEFAULT_API_BASE_URL = normalizeBaseUrl(RAILWAY_API_BASE_URL);
+const DEFAULT_API_BASE_URL = normalizeBaseUrl(VITE_API_BASE_URL);
 
 const DEFAULT_API_URL = resolveDefaultApiUrl();
 
@@ -75,8 +85,7 @@ function readViteApiBaseUrl() {
 function resolveDefaultApiUrl() {
   const viteUrl = normalizeBaseUrl(readViteApiBaseUrl());
   if (viteUrl) return viteUrl;
-  if (IS_DEV) return DEV_API_PROXY_BASE_URL;
-  return normalizeBaseUrl(window.__APP_CONFIG__?.API_BASE_URL || DEFAULT_API_BASE_URL);
+  return '';
 }
 
 
@@ -93,68 +102,8 @@ function normalizeBaseUrl(url) {
   }
 }
 
-function isLocalhostUrl(url) {
-  try {
-    const u = new URL(url);
-    const host = String(u.hostname || '').toLowerCase();
-    return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1';
-  } catch {
-    return false;
-  }
-}
-
-function isHttpsUrl(url) {
-  try {
-    const u = new URL(url);
-    return u.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-function isRailwayInternalUrl(url) {
-  try {
-    const u = new URL(url);
-    const host = String(u.hostname || '').toLowerCase();
-    return host === 'backeend.railway.internal' || host.endsWith('.railway.internal');
-  } catch {
-    return false;
-  }
-}
-
-function isKnownDeadApiBaseUrl(url) {
-  try {
-    const u = new URL(url);
-    const host = String(u.hostname || '').toLowerCase();
-    return host === 'web-production-62f13.up.railway.app';
-  } catch {
-    return false;
-  }
-}
-
-function isAllowedApiBaseUrl(url, { allowRelative = IS_DEV } = {}) {
-  const normalized = normalizeBaseUrl(url);
-  if (!normalized) return false;
-  if (normalized.startsWith('/')) return allowRelative;
-  return isHttpsUrl(normalized)
-    && !isLocalhostUrl(normalized)
-    && !isRailwayInternalUrl(normalized)
-    && !isKnownDeadApiBaseUrl(normalized);
-}
-
 function resolveApiBaseUrl() {
-  const configured = normalizeBaseUrl(window.__NFSE_API_BASE_URL__ || '');
-  if (isAllowedApiBaseUrl(configured)) return configured;
-
-  const fallback = DEFAULT_API_URL;
-  const stored = normalizeBaseUrl(localStorage.getItem(API_URL_STORAGE_KEY));
-  if (!stored) return fallback;
-  if (IS_DEV && stored === DEFAULT_API_BASE_URL && fallback === DEV_API_PROXY_BASE_URL) return fallback;
-  if (!isAllowedApiBaseUrl(stored)) {
-    localStorage.removeItem(API_URL_STORAGE_KEY);
-    return fallback;
-  }
-  return stored;
+  return DEFAULT_API_URL;
 }
 
 function normalizeApiPath(path) {
@@ -397,6 +346,76 @@ function mapQueueItem(row) {
   };
 }
 
+class ApiError extends Error {
+  constructor(message, { status = 0, data = null } = {}) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.data = data;
+  }
+}
+
+function parseApiErrorMessage(status, data, fallback = '') {
+  const backendMessage = data?.detail || data?.message || data?.error || fallback;
+  if (status === 401) return backendMessage || 'Sessao expirada. Faça login novamente.';
+  if (status === 403) return backendMessage || 'Voce nao tem permissao para acessar esta area.';
+  if (status === 400 || status === 422) return backendMessage || 'Selecione uma empresa para continuar.';
+  if (status === 404) return backendMessage || 'Recurso nao encontrado.';
+  if (status >= 500) return backendMessage || 'Erro interno do backend.';
+  return backendMessage || `HTTP ${status}`;
+}
+
+function shouldSendEmpresaHeader(path) {
+  const endpoint = normalizeApiPath(path);
+  if (endpoint === '/health') return false;
+  if (endpoint === '/me') return false;
+  if (endpoint === '/minhas-empresas') return false;
+  if (endpoint.startsWith('/admin/')) return false;
+  return true;
+}
+
+function applyAuthHeaders(headers, endpoint) {
+  if (authContext.accessToken && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${authContext.accessToken}`);
+  }
+  if (authContext.selectedEmpresaId && shouldSendEmpresaHeader(endpoint) && !headers.has('X-Empresa-ID')) {
+    headers.set('X-Empresa-ID', authContext.selectedEmpresaId);
+  }
+}
+
+async function ensureAuthToken() {
+  if (authContext.accessToken || !supabase) return authContext.accessToken;
+  const { data } = await supabase.auth.getSession();
+  authContext.accessToken = data?.session?.access_token || '';
+  return authContext.accessToken;
+}
+
+function normalizeEmpresa(item) {
+  if (!item) return null;
+  const id = String(item.id ?? item.empresa_id ?? item.uuid ?? '').trim();
+  if (!id) return null;
+  return {
+    ...item,
+    id,
+    nome: item.nome || item.razao_social || item.name || item.label || `Empresa ${id}`,
+    ativa: item.ativa ?? item.active ?? true,
+  };
+}
+
+function normalizeEmpresas(payload) {
+  const list = extractResponseList(payload);
+  return list.map(normalizeEmpresa).filter(Boolean);
+}
+
+function getUserRole(user) {
+  return String(user?.role || user?.papel || user?.perfil || user?.tipo || user?.app_role || '').toLowerCase();
+}
+
+function isUserSuperAdmin(user) {
+  const role = getUserRole(user);
+  return role === 'super_admin' || role === 'superadmin' || role === 'admin_global';
+}
+
 function getExportCompetencia(item) {
   const value = firstTextValue(item.queue_competencia, item.competencia);
   return value === '—' || value.includes('€') ? firstTextValue(item.competencia) : value;
@@ -411,8 +430,6 @@ function mapDetailedExportRow(item) {
     empresa: item.queue_empresa || clientName(item.cert_alias || item.certificado || ''),
     prestador: item.queue_prestador || item.razao_social || '',
     cnpj_prestador: firstTextValue(item.cnpj_prestador, item.prestador_cnpj, item.cnpj_cpf_prestador, item.prestador_cpf_cnpj, item.cnpj_cpf),
-    cnpj_tomador: firstTextValue(item.cnpj_tomador, item.tomador_cnpj, item.cpf_cnpj_tomador, item.tomador_cpf_cnpj, item.documento_tomador, item.tomador_documento, item.cnpj_cpf_tomador, item.cnpj_cpf),
-    razao_social_tomador: firstTextValue(item.razao_social_tomador, item.tomador_razao_social, item.nome_tomador, item.tomador_nome, item.tomador, item.parte_tomador_nome),
     municipio: item.municipio || '',
     codigo_servico: item.codigo_servico || '',
     descricao_servico: item.descricao_servico || '',
@@ -748,6 +765,8 @@ async function api(baseUrl, path, opts = {}) {
     headers.set('Content-Type', 'application/json');
     req.body = JSON.stringify(opts.body);
   }
+  await ensureAuthToken();
+  applyAuthHeaders(headers, endpoint);
   const isCacheable = method === 'GET' && !req.body && opts.cache !== 'no-store';
   const key = isCacheable ? apiCacheKey(normalizeBaseUrl(baseUrl), endpoint) : '';
   const ttl = Number.isFinite(opts.cacheTtl) ? opts.cacheTtl : API_CACHE_TTL_MS;
@@ -793,7 +812,10 @@ async function api(baseUrl, path, opts = {}) {
       const txt = await res.text();
       let data;
       try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
-      if (!res.ok) throw new Error(data?.detail || data?.message || txt || `HTTP ${res.status}`);
+      if (!res.ok) {
+        if (res.status === 401) authContext.onUnauthorized?.();
+        throw new ApiError(parseApiErrorMessage(res.status, data, txt), { status: res.status, data });
+      }
       const responseItems = extractResponseList(data);
       apiDebugLog('response parsed', {
         endpoint,
@@ -837,9 +859,15 @@ async function fetchProcessFileBlob(baseUrl, processId, arquivoId, grupos = [], 
   const url = buildApiUrl(baseUrl, endpoint);
   apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url, method: 'GET' });
   try {
-    const res = await fetch(url);
+    const headers = new Headers();
+    await ensureAuthToken();
+    applyAuthHeaders(headers, endpoint);
+    const res = await fetch(url, { headers });
     apiDebugLog('download response status', { endpoint, url, status: res.status, ok: res.ok });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 401) authContext.onUnauthorized?.();
+      throw new ApiError(parseApiErrorMessage(res.status, null), { status: res.status });
+    }
     return res.blob();
   } catch (e) {
     apiDebugError('download failed', {
@@ -852,6 +880,25 @@ async function fetchProcessFileBlob(baseUrl, processId, arquivoId, grupos = [], 
   }
 }
 
+async function fetchProtectedBlob(baseUrl, path) {
+  const endpoint = normalizeApiPath(path);
+  const url = buildApiUrl(baseUrl, endpoint);
+  const headers = new Headers();
+  await ensureAuthToken();
+  applyAuthHeaders(headers, endpoint);
+  apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url, method: 'GET' });
+  const res = await fetch(url, { headers });
+  apiDebugLog('download response status', { endpoint, url, status: res.status, ok: res.ok });
+  if (!res.ok) {
+    let data = null;
+    const txt = await res.text().catch(() => '');
+    try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
+    if (res.status === 401) authContext.onUnauthorized?.();
+    throw new ApiError(parseApiErrorMessage(res.status, data, txt), { status: res.status, data });
+  }
+  return res.blob();
+}
+
 function downloadBrowserBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -862,14 +909,11 @@ function downloadBrowserBlob(blob, filename) {
 }
 
 function openUrlInNewTab(url) {
-  const popup = window.open(url, '_blank', 'noopener,noreferrer');
-  if (!popup) {
-    const a = document.createElement('a');
-    a.href = url;
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    a.click();
-  }
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.click();
 }
 
 function downloadUrl(url, filename) {
@@ -882,7 +926,10 @@ function downloadUrl(url, filename) {
 
 async function downloadResolvedUrl(url, filename) {
   try {
-    const res = await fetch(url);
+    const headers = new Headers();
+    await ensureAuthToken();
+    applyAuthHeaders(headers, url);
+    const res = await fetch(url, { headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const blob = await res.blob();
     downloadBrowserBlob(blob, filename);
@@ -899,14 +946,11 @@ async function downloadBlob(baseUrl, processId, arquivoId, filename, grupos = []
 async function openProcessFile(baseUrl, processId, arquivoId, grupos = [], grupoAtual = '') {
   const blob = await fetchProcessFileBlob(baseUrl, processId, arquivoId, grupos, grupoAtual);
   const url = URL.createObjectURL(blob);
-  const popup = window.open(url, '_blank', 'noopener,noreferrer');
-  if (!popup) {
-    const a = document.createElement('a');
-    a.href = url;
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    a.click();
-  }
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.click();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
@@ -2952,14 +2996,8 @@ function ProcessoModal({ selected, baseUrl, toast, onClose, grupos, grupoAtual, 
       setDlZipProgress(`Baixando ${totalArqs} arquivo${totalArqs!==1?'s':''}...`);
 
       const endpoint = appendGroupParam(`/processos/${proc.id}/download-zip`, grupos, grupoAtual);
-      const requestUrl = buildApiUrl(baseUrl, endpoint);
-      apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url: requestUrl, method: 'GET' });
-      const res = await fetch(requestUrl);
-      apiDebugLog('download response status', { endpoint, url: requestUrl, status: res.status, ok: res.ok });
-      if (!res.ok) throw new Error('Erro ao gerar ZIP');
-
       setDlZipProgress('Empacotando ZIP...');
-      const blob = await res.blob();
+      const blob = await fetchProtectedBlob(baseUrl, endpoint);
       const sizeMB = (blob.size / 1024 / 1024).toFixed(1);
 
       setDlZipProgress(`Iniciando download (${sizeMB} MB)...`);
@@ -2983,12 +3021,7 @@ function ProcessoModal({ selected, baseUrl, toast, onClose, grupos, grupoAtual, 
     setDlCsv(true);
     try {
       const endpoint = appendGroupParam(`/processos/${proc.id}/relatorio-csv`, grupos, grupoAtual);
-      const requestUrl = buildApiUrl(baseUrl, endpoint);
-      apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url: requestUrl, method: 'GET' });
-      const res = await fetch(requestUrl);
-      apiDebugLog('download response status', { endpoint, url: requestUrl, status: res.status, ok: res.ok });
-      if (!res.ok) throw new Error('Erro ao gerar CSV');
-      const blob = await res.blob();
+      const blob = await fetchProtectedBlob(baseUrl, endpoint);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -5514,108 +5547,407 @@ function CredenciaisPage({ baseUrl, toast, grupoAtual, grupos }) {
   );
 }
 
-// ── Page: Configurações ──────────────────────────────────────
-function ConfiguracoesPage({ baseUrl, setBaseUrl, toast }) {
-  const [url, setUrl] = useState(baseUrl);
-  const [pinging, setPinging] = useState(false);
-  const [pingRes, setPingRes] = useState(null);
+function LoginPage({ baseUrl, toast }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  useEffect(() => { setUrl(baseUrl); }, [baseUrl]);
-
-  const ping = async () => {
-    setPinging(true); setPingRes(null);
-    const cleanedUrl = normalizeBaseUrl(url);
-    if (!isHttpsUrl(cleanedUrl)) {
-      const msg = 'Informe uma URL válida iniciando com https://.';
-      setPingRes({ ok: false, msg });
-      toast(msg, 'error');
-      setPinging(false);
+  const submit = async event => {
+    event.preventDefault();
+    if (!supabase) {
+      toast('Supabase nao configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.', 'error');
       return;
     }
-    if (isLocalhostUrl(cleanedUrl)) {
-      const msg = 'URL local (localhost/127.0.0.1) não é permitida no portal publicado.';
-      setPingRes({ ok: false, msg });
-      toast(msg, 'error');
-      setPinging(false);
-      return;
-    }
-    if (isRailwayInternalUrl(cleanedUrl)) {
-      const msg = 'URL interna do Railway não é acessível pelo navegador. Use o domínio público https://*.up.railway.app.';
-      setPingRes({ ok: false, msg });
-      toast(msg, 'error');
-      setPinging(false);
-      return;
-    }
+    setLoading(true);
     try {
-      const d = await api(cleanedUrl, '/health');
-      setPingRes({ ok: true, msg: `API conectada — status: ${d.status}` });
-      setBaseUrl(cleanedUrl);
-      toast('Conexão estabelecida com sucesso.', 'success');
+      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      if (error) throw error;
+      toast('Login realizado com sucesso.', 'success');
     } catch (e) {
-      setPingRes({ ok: false, msg: e.message });
-      toast('Falha na conexão: ' + e.message, 'error');
-    } finally { setPinging(false); }
+      toast(e.message || 'Nao foi possivel entrar.', 'error');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
-    <div className="page-enter">
-      <SectionHeader title="Configurações" sub="Conexão e preferências do portal" />
-
-      <div className="card" style={{ maxWidth: 600 }}>
-        <div className="card-header"><span className="card-title">Conexão com a API</span></div>
+    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, background: 'var(--bg)' }}>
+      <div className="card" style={{ width: '100%', maxWidth: 420 }}>
+        <div className="card-header">
+          <div>
+            <span className="card-title">Portal NFS-e</span>
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>Entre para acessar sua empresa</div>
+          </div>
+        </div>
         <div className="card-body">
-          <div className="form-grid">
+          {!baseUrl && <Alert type="error">VITE_API_BASE_URL nao configurada.</Alert>}
+          {!isSupabaseConfigured && <Alert type="error">Supabase nao configurado no .env.</Alert>}
+          <form className="form-grid" onSubmit={submit}>
             <div className="field">
-              <label className="label">URL da API</label>
-              <input className="input" value={url} onChange={e => setUrl(e.target.value)}
-                placeholder={DEFAULT_API_URL || 'https://api.exemplo.com'}
-                onKeyDown={e => e.key === 'Enter' && ping()} />
-              <span className="input-hint">Defina via VITE_API_BASE_URL (Vite) ou window.__APP_CONFIG__.API_BASE_URL (estático)</span>
+              <label className="label">Email</label>
+              <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" required />
             </div>
-            {pingRes && <Alert type={pingRes.ok ? 'success' : 'error'}>{pingRes.msg}</Alert>}
-            <div>
-              <button className="btn btn-primary btn-sm" disabled={pinging} onClick={ping}>
-                {pinging ? <><Spinner size={13} /> Testando...</> : '⚡ Testar conexão'}
-              </button>
+            <div className="field">
+              <label className="label">Senha</label>
+              <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" required />
             </div>
-          </div>
-
-          <div className="divider" />
-
-          <div style={{ fontSize: 12, color: 'var(--text-3)', lineHeight: 1.8 }}>
-            <div style={{ fontWeight: 600, color: 'var(--text-2)', marginBottom: 8 }}>Rotas da API</div>
-            {[
-              ['POST /certificados',           'multipart/form-data'],
-              ['POST /credenciais',             'JSON — CPF/CNPJ validado'],
-              ['POST /executar',                'JSON — disparo manual'],
-              ['POST /agendar',                 'JSON — modo automático diário'],
-              ['PUT  /nfse/{id}',               'JSON — salvar edições do relatório'],
-              ['GET  /processos/{id}/arquivos/{arq}/download', 'stream — MinIO ou local'],
-            ].map(([rota, desc]) => (
-              <div key={rota} style={{ display: 'flex', gap: 8, padding: '4px 0', borderBottom: '1px solid var(--border-soft)' }}>
-                <code style={{ color: 'var(--accent)', fontSize: 11, minWidth: 240 }}>{rota}</code>
-                <span style={{ color: 'var(--text-3)', fontSize: 11 }}>{desc}</span>
-              </div>
-            ))}
-          </div>
+            <button className="btn btn-primary" type="submit" disabled={loading || !baseUrl || !isSupabaseConfigured}>
+              {loading ? <><Spinner size={13} /> Entrando...</> : 'Entrar'}
+            </button>
+          </form>
         </div>
       </div>
     </div>
   );
 }
 
-// ── App Shell ────────────────────────────────────────────────
+function SemEmpresaPage({ isSuperAdmin, navigate }) {
+  return (
+    <div className="page-enter">
+      <div className="card" style={{ maxWidth: 760 }}>
+        <div className="card-body">
+          <Alert type={isSuperAdmin ? 'info' : 'warn'}>
+            {isSuperAdmin
+              ? 'Nenhuma empresa ativa selecionada. Use o painel Admin para gerenciar empresas ou selecione uma empresa no topo.'
+              : 'Seu usuario ainda nao esta vinculado a nenhuma empresa.'}
+          </Alert>
+          {isSuperAdmin && (
+            <div style={{ marginTop: 12 }}>
+              <button className="btn btn-primary btn-sm" onClick={() => navigate('admin')}>Abrir Admin</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminPage({ baseUrl, toast, isSuperAdmin }) {
+  const [selectedEmpresaId, setSelectedEmpresaId] = useState('');
+  const [empresaForm, setEmpresaForm] = useState({ nome: '', cnpj: '', ativa: true });
+  const [editingEmpresa, setEditingEmpresa] = useState(null);
+  const [userForm, setUserForm] = useState({ user_id: '', email: '', papel: 'user', ativo: true });
+  const [editingUserId, setEditingUserId] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  if (!isSuperAdmin) {
+    return <div className="page-enter"><Alert type="error">Voce nao tem permissao para acessar esta area.</Alert></div>;
+  }
+
+  const empresasState = useAsync(signal => api(baseUrl, '/admin/empresas', { signal }), [baseUrl]);
+  const empresas = useMemo(() => normalizeEmpresas(empresasState.data), [empresasState.data]);
+
+  useEffect(() => {
+    if (!selectedEmpresaId && empresas[0]?.id) setSelectedEmpresaId(empresas[0].id);
+  }, [empresas, selectedEmpresaId]);
+
+  const usuariosState = useAsync(signal => {
+    if (!selectedEmpresaId) return Promise.resolve([]);
+    return api(baseUrl, `/admin/empresas/${selectedEmpresaId}/usuarios`, { signal });
+  }, [baseUrl, selectedEmpresaId]);
+  const usuarios = extractResponseList(usuariosState.data);
+
+  const saveEmpresa = async event => {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const body = { ...empresaForm, ativa: Boolean(empresaForm.ativa) };
+      if (editingEmpresa) {
+        await api(baseUrl, `/admin/empresas/${editingEmpresa.id}`, { method: 'PUT', body });
+        toast('Empresa atualizada.', 'success');
+      } else {
+        await api(baseUrl, '/admin/empresas', { method: 'POST', body });
+        toast('Empresa criada.', 'success');
+      }
+      setEmpresaForm({ nome: '', cnpj: '', ativa: true });
+      setEditingEmpresa(null);
+      empresasState.reload();
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveUser = async event => {
+    event.preventDefault();
+    if (!selectedEmpresaId) {
+      toast('Selecione uma empresa para continuar.', 'error');
+      return;
+    }
+    setSaving(true);
+    try {
+      const body = { ...userForm, ativo: Boolean(userForm.ativo) };
+      if (editingUserId) {
+        await api(baseUrl, `/admin/empresas/${selectedEmpresaId}/usuarios/${editingUserId}`, { method: 'PUT', body });
+        toast('Vinculo atualizado.', 'success');
+      } else {
+        await api(baseUrl, `/admin/empresas/${selectedEmpresaId}/usuarios`, { method: 'POST', body });
+        toast('Usuario vinculado.', 'success');
+      }
+      setUserForm({ user_id: '', email: '', papel: 'user', ativo: true });
+      setEditingUserId('');
+      usuariosState.reload();
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const editEmpresa = empresa => {
+    setEditingEmpresa(empresa);
+    setEmpresaForm({ nome: empresa.nome || '', cnpj: empresa.cnpj || empresa.cpf_cnpj || '', ativa: empresa.ativa !== false });
+  };
+
+  const editUser = user => {
+    const userId = String(user.user_id || user.id || '').trim();
+    setEditingUserId(userId);
+    setUserForm({ user_id: userId, email: user.email || '', papel: user.papel || user.role || 'user', ativo: user.ativo ?? user.active ?? true });
+  };
+
+  const removeUser = async user => {
+    const userId = String(user.user_id || user.id || '').trim();
+    if (!selectedEmpresaId || !userId) return;
+    setSaving(true);
+    try {
+      await api(baseUrl, `/admin/empresas/${selectedEmpresaId}/usuarios/${userId}`, { method: 'DELETE' });
+      toast('Vinculo removido.', 'success');
+      usuariosState.reload();
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="page-enter">
+      <SectionHeader title="Admin" sub="Empresas, usuarios e URL da API em modo leitura" />
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-body">
+          <div className="field">
+            <label className="label">URL da API</label>
+            <input className="input" value={baseUrl || 'Nao configurada'} readOnly />
+            <span className="input-hint">Controlada pelo deploy via VITE_API_BASE_URL.</span>
+          </div>
+        </div>
+      </div>
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-header"><span className="card-title">{editingEmpresa ? 'Editar empresa' : 'Nova empresa'}</span></div>
+          <div className="card-body">
+            <form className="form-grid" onSubmit={saveEmpresa}>
+              <div className="field">
+                <label className="label">Nome</label>
+                <input className="input" value={empresaForm.nome} onChange={e => setEmpresaForm(f => ({ ...f, nome: e.target.value }))} required />
+              </div>
+              <div className="field">
+                <label className="label">CNPJ</label>
+                <input className="input" value={empresaForm.cnpj} onChange={e => setEmpresaForm(f => ({ ...f, cnpj: e.target.value }))} />
+              </div>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input type="checkbox" checked={empresaForm.ativa} onChange={e => setEmpresaForm(f => ({ ...f, ativa: e.target.checked }))} />
+                Ativa
+              </label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-primary btn-sm" disabled={saving}>{saving ? <Spinner size={13} /> : 'Salvar'}</button>
+                {editingEmpresa && <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setEditingEmpresa(null); setEmpresaForm({ nome: '', cnpj: '', ativa: true }); }}>Cancelar</button>}
+              </div>
+            </form>
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-header"><span className="card-title">Empresas</span></div>
+          <div className="card-body">
+            {empresasState.loading ? <Loading /> : empresasState.error ? <Alert type="error">{empresasState.error}</Alert> : (
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Nome</th><th>CNPJ</th><th>Status</th><th></th></tr></thead>
+                  <tbody>
+                    {!empresas.length ? <Empty /> : empresas.map(empresa => (
+                      <tr key={empresa.id}>
+                        <td>{empresa.nome}</td>
+                        <td>{empresa.cnpj || empresa.cpf_cnpj || '-'}</td>
+                        <td><Badge tone={empresa.ativa === false ? 'neutral' : 'success'}>{empresa.ativa === false ? 'Inativa' : 'Ativa'}</Badge></td>
+                        <td><button className="btn btn-secondary btn-sm" onClick={() => editEmpresa(empresa)}>Editar</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="card" style={{ marginTop: 16 }}>
+        <div className="card-header"><span className="card-title">Usuarios da Empresa</span></div>
+        <div className="card-body">
+          <div className="field" style={{ marginBottom: 12 }}>
+            <label className="label">Empresa</label>
+            <select className="input" value={selectedEmpresaId} onChange={e => setSelectedEmpresaId(e.target.value)}>
+              {empresas.map(empresa => <option key={empresa.id} value={empresa.id}>{empresa.nome}</option>)}
+            </select>
+          </div>
+          <form className="form-grid" onSubmit={saveUser} style={{ marginBottom: 16 }}>
+            <div className="field">
+              <label className="label">User ID</label>
+              <input className="input" value={userForm.user_id} onChange={e => setUserForm(f => ({ ...f, user_id: e.target.value }))} disabled={Boolean(editingUserId)} />
+            </div>
+            <div className="field">
+              <label className="label">Email</label>
+              <input className="input" type="email" value={userForm.email} onChange={e => setUserForm(f => ({ ...f, email: e.target.value }))} />
+            </div>
+            <div className="field">
+              <label className="label">Papel</label>
+              <select className="input" value={userForm.papel} onChange={e => setUserForm(f => ({ ...f, papel: e.target.value }))}>
+                <option value="user">user</option>
+                <option value="admin">admin</option>
+                <option value="super_admin">super_admin</option>
+              </select>
+            </div>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input type="checkbox" checked={userForm.ativo} onChange={e => setUserForm(f => ({ ...f, ativo: e.target.checked }))} />
+              Ativo
+            </label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn btn-primary btn-sm" disabled={saving || !selectedEmpresaId}>{saving ? <Spinner size={13} /> : 'Salvar vinculo'}</button>
+              {editingUserId && <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setEditingUserId(''); setUserForm({ user_id: '', email: '', papel: 'user', ativo: true }); }}>Cancelar</button>}
+            </div>
+          </form>
+          {usuariosState.loading ? <Loading /> : usuariosState.error ? <Alert type="error">{usuariosState.error}</Alert> : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Email</th><th>Papel</th><th>Status</th><th></th></tr></thead>
+                <tbody>
+                  {!usuarios.length ? <Empty /> : usuarios.map(user => {
+                    const userId = String(user.user_id || user.id || user.email || '');
+                    return (
+                      <tr key={userId}>
+                        <td>{user.email || userId}</td>
+                        <td>{user.papel || user.role || '-'}</td>
+                        <td><Badge tone={(user.ativo ?? user.active ?? true) ? 'success' : 'neutral'}>{(user.ativo ?? user.active ?? true) ? 'Ativo' : 'Inativo'}</Badge></td>
+                        <td style={{ display: 'flex', gap: 6 }}>
+                          <button className="btn btn-secondary btn-sm" onClick={() => editUser(user)}>Editar</button>
+                          <button className="btn btn-danger btn-sm" onClick={() => removeUser(user)} disabled={saving}>Remover</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [active, setActive] = useState('dashboard');
   const [renderedActive, setRenderedActive] = useState('dashboard');
   const [routePending, setRoutePending] = useState(false);
   const [grupoAtual, setGrupoAtual] = useState(readCurrentGroup);
-  const [baseUrl, setBaseUrl] = useState(resolveApiBaseUrl);
+  const [baseUrl] = useState(resolveApiBaseUrl);
   const [apiStatus, setApiStatus] = useState('idle');
+  const [session, setSession] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [minhasEmpresas, setMinhasEmpresas] = useState([]);
+  const [selectedEmpresaId, setSelectedEmpresaId] = useState(() => localStorage.getItem(EMPRESA_ID_STORAGE_KEY) || '');
+  const [isLoadingAuth, setIsLoadingAuth] = useState(true);
+  const [isLoadingEmpresas, setIsLoadingEmpresas] = useState(false);
+  const [authError, setAuthError] = useState('');
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopSidebarVisible, setDesktopSidebarVisible] = useState(true);
   const { toasts, toast } = useToast();
   const grupos = useMemo(() => [LOCAL_GROUP], []);
+  const selectedEmpresa = useMemo(
+    () => minhasEmpresas.find(empresa => empresa.id === selectedEmpresaId) || null,
+    [minhasEmpresas, selectedEmpresaId],
+  );
+  const isSuperAdmin = useMemo(() => isUserSuperAdmin(currentUser), [currentUser]);
+
+  const logout = useCallback(async () => {
+    clearApiCache();
+    localStorage.removeItem(EMPRESA_ID_STORAGE_KEY);
+    setSession(null);
+    setCurrentUser(null);
+    setMinhasEmpresas([]);
+    setSelectedEmpresaId('');
+    setActive('dashboard');
+    setRenderedActive('dashboard');
+    if (supabase) await supabase.auth.signOut().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const token = session?.access_token || '';
+    setApiAuthContext({ accessToken: token, selectedEmpresaId, onUnauthorized: logout });
+  }, [session?.access_token, selectedEmpresaId, logout]);
+
+  useEffect(() => {
+    if (!supabase) {
+      setIsLoadingAuth(false);
+      return undefined;
+    }
+    let mounted = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setSession(data?.session || null);
+      setIsLoadingAuth(false);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession || null);
+      setIsLoadingAuth(false);
+      if (!nextSession) {
+        clearApiCache();
+        setCurrentUser(null);
+        setMinhasEmpresas([]);
+        setSelectedEmpresaId('');
+      }
+    });
+    return () => {
+      mounted = false;
+      listener?.subscription?.unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!session?.access_token || !baseUrl) {
+      setCurrentUser(null);
+      setMinhasEmpresas([]);
+      setIsLoadingEmpresas(false);
+      return;
+    }
+    let alive = true;
+    const loadContext = async () => {
+      setIsLoadingEmpresas(true);
+      setAuthError('');
+      try {
+        const [me, empresasPayload] = await Promise.all([
+          api(baseUrl, '/me', { cache: 'no-store' }),
+          api(baseUrl, '/minhas-empresas', { cache: 'no-store' }),
+        ]);
+        if (!alive) return;
+        const empresas = normalizeEmpresas(empresasPayload);
+        const stored = localStorage.getItem(EMPRESA_ID_STORAGE_KEY) || '';
+        const validStored = empresas.some(empresa => empresa.id === stored);
+        const nextEmpresaId = validStored ? stored : (empresas.length === 1 ? empresas[0].id : '');
+        setCurrentUser(me || {});
+        setMinhasEmpresas(empresas);
+        setSelectedEmpresaId(nextEmpresaId);
+        if (nextEmpresaId) localStorage.setItem(EMPRESA_ID_STORAGE_KEY, nextEmpresaId);
+        else localStorage.removeItem(EMPRESA_ID_STORAGE_KEY);
+      } catch (e) {
+        if (!alive) return;
+        setAuthError(e.message || 'Nao foi possivel carregar seu contexto de acesso.');
+      } finally {
+        if (alive) setIsLoadingEmpresas(false);
+      }
+    };
+    loadContext();
+    return () => { alive = false; };
+  }, [baseUrl, session?.access_token]);
 
   const selecionarGrupo = groupKey => {
     const next = LOCAL_GROUP.id;
@@ -5642,6 +5974,18 @@ function App() {
     setGrupoAtual(LOCAL_GROUP.id);
   };
 
+  const trocarEmpresa = nextEmpresaId => {
+    clearApiCache();
+    const next = String(nextEmpresaId || '').trim();
+    setSelectedEmpresaId(next);
+    if (next) localStorage.setItem(EMPRESA_ID_STORAGE_KEY, next);
+    else localStorage.removeItem(EMPRESA_ID_STORAGE_KEY);
+    setActive('dashboard');
+    setRenderedActive('dashboard');
+    setMobileOpen(false);
+    setApiStatus('idle');
+  };
+
   useEffect(() => {
     if (grupoAtual === LOCAL_GROUP.id) return;
     setGrupoAtual(LOCAL_GROUP.id);
@@ -5652,19 +5996,6 @@ function App() {
     localStorage.setItem(GROUP_LABEL_STORAGE_KEY, LOCAL_GROUP.label);
     localStorage.setItem(GROUP_SLUG_STORAGE_KEY, LOCAL_GROUP.slug);
   }, []);
-
-  useEffect(() => {
-    const cleaned = normalizeBaseUrl(baseUrl);
-
-    const next = isAllowedApiBaseUrl(cleaned) ? cleaned : DEFAULT_API_BASE_URL;
-
-    if (next !== baseUrl) {
-      setBaseUrl(next);
-      return;
-    }
-    if (next) localStorage.setItem(API_URL_STORAGE_KEY, next);
-    else localStorage.removeItem(API_URL_STORAGE_KEY);
-  }, [baseUrl]);
 
   useEffect(() => {
     if (!baseUrl) {
@@ -5760,7 +6091,12 @@ function App() {
 
       <div className="sidebar-footer">
         <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{getGroupLabel(grupos, grupoAtual)}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{selectedEmpresa?.nome || 'Sem empresa ativa'}</div>
+          {isSuperAdmin && (
+            <button className={cn('btn btn-secondary btn-sm', active === 'admin' && 'btn-primary')} onClick={() => navigate('admin')}>
+              Admin
+            </button>
+          )}
         </div>
         <div className="api-status">
           <div className={cn('status-dot', apiStatus)} />
@@ -5771,7 +6107,13 @@ function App() {
   );
 
   const renderPage = () => {
-    const pageProps = { baseUrl, toast, grupoAtual, grupos };
+    const pageProps = { baseUrl, toast, grupoAtual, grupos, selectedEmpresa, selectedEmpresaId };
+    if (renderedActive === 'admin') {
+      return <AdminPage baseUrl={baseUrl} toast={toast} isSuperAdmin={isSuperAdmin} />;
+    }
+    if (!selectedEmpresaId) {
+      return <SemEmpresaPage isSuperAdmin={isSuperAdmin} navigate={navigate} />;
+    }
     switch (renderedActive) {
       case 'dashboard':
         return <DashboardPage {...pageProps} navigate={navigate} />;
@@ -5793,16 +6135,31 @@ function App() {
         return <CertificadosPage {...pageProps} />;
       case 'credenciais':
         return <CredenciaisPage {...pageProps} />;
-      case 'configuracoes':
-        return <ConfiguracoesPage {...pageProps} baseUrl={baseUrl} setBaseUrl={u => { setBaseUrl(u); setApiStatus('idle'); }} />;
       default:
         return <DashboardPage {...pageProps} navigate={navigate} />;
     }
   };
 
-  const currentMenu = MENU.find(m => m.key === active);
+  const currentMenu = active === 'admin' ? { label: 'Admin' } : MENU.find(m => m.key === active);
 
-  const showApiMissing = !baseUrl && active !== 'configuracoes';
+  const showApiMissing = !baseUrl;
+
+  if (isLoadingAuth) {
+    return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}><Loading label="Carregando sessao..." /></div>;
+  }
+
+  if (!session) {
+    return (
+      <>
+        <LoginPage baseUrl={baseUrl} toast={toast} />
+        <ToastContainer toasts={toasts} />
+      </>
+    );
+  }
+
+  if (isLoadingEmpresas) {
+    return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}><Loading label="Carregando contexto..." /></div>;
+  }
 
   return (
     <div className={cn('app-shell', isQueuePageActive && 'focus-mode', isQueuePageActive && !desktopSidebarVisible && 'sidebar-hidden')}>
@@ -5838,29 +6195,43 @@ function App() {
 
         {/* Desktop topbar */}
         <div className="topbar">
-          <span className="topbar-title">{currentMenu?.label}</span>
+          <span className="topbar-title">Portal NFS-e</span>
           <span className="topbar-sep">/</span>
-          <span className="topbar-sub">Portal de Auditoria Fiscal</span>
+          <span className="topbar-sub">{currentMenu?.label || 'Auditoria Fiscal'}</span>
           <div className="topbar-actions">
+            {minhasEmpresas.length > 1 ? (
+              <select className="input" style={{ height: 34, minWidth: 220 }} value={selectedEmpresaId} onChange={e => trocarEmpresa(e.target.value)}>
+                <option value="">Selecione uma empresa</option>
+                {minhasEmpresas.map(empresa => <option key={empresa.id} value={empresa.id}>{empresa.nome}</option>)}
+              </select>
+            ) : (
+              <span style={{ fontSize: 12, color: 'var(--text-2)' }}>Empresa: {selectedEmpresa?.nome || 'nenhuma'}</span>
+            )}
+            {isSuperAdmin && (
+              <button className="btn btn-secondary btn-sm" onClick={() => navigate('admin')}>Admin</button>
+            )}
+            <button className="btn btn-secondary btn-sm" onClick={logout}>Sair</button>
             <div className="api-status" style={{ background: 'transparent', border: 'none', padding: '4px 8px' }}>
               <div className={cn('status-dot', apiStatus)} />
-              <span style={{ fontSize: 11 }}>{baseUrl}</span>
+              <span style={{ fontSize: 11 }}>{apiStatus === 'ok' ? 'API conectada' : apiStatus === 'err' ? 'API offline' : 'Verificando API'}</span>
             </div>
           </div>
         </div>
 
-        <div className="page-content">
-          {showApiMissing ? (
+        <div className="page-content" key={selectedEmpresaId || 'sem-empresa'}>
+          {authError ? (
             <div className="card" style={{ maxWidth: 760 }}>
               <div className="card-body">
-                <Alert type="error">
-                  API não configurada. Configure a URL em <strong>Configurações</strong> para continuar.
-                </Alert>
+                <Alert type="error">{authError}</Alert>
                 <div style={{ marginTop: 12 }}>
-                  <button className="btn btn-primary btn-sm" onClick={() => navigate('configuracoes')}>
-                    Abrir configurações
-                  </button>
+                  <button className="btn btn-secondary btn-sm" onClick={logout}>Sair</button>
                 </div>
+              </div>
+            </div>
+          ) : showApiMissing ? (
+            <div className="card" style={{ maxWidth: 760 }}>
+              <div className="card-body">
+                <Alert type="error">VITE_API_BASE_URL nao configurada. Ajuste o .env/deploy para continuar.</Alert>
               </div>
             </div>
           ) : (routePending ? <PageFallback /> : renderPage())}
