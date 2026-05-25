@@ -412,6 +412,7 @@ function getUserRole(user) {
 }
 
 function isUserSuperAdmin(user) {
+  if (user?.is_super_admin === true || user?.super_admin === true) return true;
   const role = getUserRole(user);
   return role === 'super_admin' || role === 'superadmin' || role === 'admin_global';
 }
@@ -5548,26 +5549,66 @@ function CredenciaisPage({ baseUrl, toast, grupoAtual, grupos }) {
 }
 
 function LoginPage({ baseUrl, toast }) {
+  const [mode, setMode] = useState('login');
+  const [nome, setNome] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [successMessage, setSuccessMessage] = useState('');
+
+  const canUseAuth = Boolean(baseUrl && isSupabaseConfigured);
 
   const submit = async event => {
     event.preventDefault();
     if (!supabase) {
-      toast('Supabase nao configurado. Verifique VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.', 'error');
+      toast('Configure VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no .env para habilitar login e cadastro.', 'error');
       return;
     }
     setLoading(true);
+    setSuccessMessage('');
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-      if (error) throw error;
-      toast('Login realizado com sucesso.', 'success');
+      if (mode === 'signup') {
+        const cleanName = nome.trim();
+        const cleanEmail = email.trim();
+        if (!cleanName) throw new Error('Informe seu nome.');
+        if (!cleanEmail) throw new Error('Informe seu email.');
+        if (!password) throw new Error('Informe uma senha.');
+        if (password.length < 6) throw new Error('A senha deve ter no minimo 6 caracteres.');
+        if (password !== confirmPassword) throw new Error('A confirmacao de senha deve ser igual a senha.');
+
+        const { data, error } = await supabase.auth.signUp({
+          email: cleanEmail,
+          password,
+          options: { data: { nome: cleanName } },
+        });
+        if (error) throw error;
+        const needsEmailConfirmation = !data?.session;
+        const msg = needsEmailConfirmation
+          ? 'Cadastro realizado. Verifique seu e-mail para confirmar a conta. Depois, aguarde o vinculo com uma empresa.'
+          : 'Cadastro realizado. Aguarde um administrador vincular seu usuario a uma empresa.';
+        setSuccessMessage(msg);
+        toast('Cadastro realizado.', 'success');
+        setMode('login');
+        setPassword('');
+        setConfirmPassword('');
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (error) throw error;
+        toast('Login realizado com sucesso.', 'success');
+      }
     } catch (e) {
-      toast(e.message || 'Nao foi possivel entrar.', 'error');
+      toast(e.message || (mode === 'signup' ? 'Nao foi possivel criar a conta.' : 'Nao foi possivel entrar.'), 'error');
     } finally {
       setLoading(false);
     }
+  };
+
+  const switchMode = nextMode => {
+    setMode(nextMode);
+    setPassword('');
+    setConfirmPassword('');
+    setSuccessMessage('');
   };
 
   return (
@@ -5575,24 +5616,42 @@ function LoginPage({ baseUrl, toast }) {
       <div className="card" style={{ width: '100%', maxWidth: 420 }}>
         <div className="card-header">
           <div>
-            <span className="card-title">Portal NFS-e</span>
-            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>Entre para acessar sua empresa</div>
+            <span className="card-title">{mode === 'signup' ? 'Criar cadastro' : 'Portal NFS-e'}</span>
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>
+              {mode === 'signup' ? 'Solicite acesso ao Portal NFS-e' : 'Entre para acessar sua empresa'}
+            </div>
           </div>
         </div>
         <div className="card-body">
-          {!baseUrl && <Alert type="error">VITE_API_BASE_URL nao configurada.</Alert>}
-          {!isSupabaseConfigured && <Alert type="error">Supabase nao configurado no .env.</Alert>}
+          {!baseUrl && <Alert type="error">Configure VITE_API_BASE_URL no .env para conectar ao backend.</Alert>}
+          {!isSupabaseConfigured && <Alert type="error">Configure VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no .env para habilitar login e cadastro.</Alert>}
+          {successMessage && <Alert type="success">{successMessage}</Alert>}
           <form className="form-grid" onSubmit={submit}>
+            {mode === 'signup' && (
+              <div className="field">
+                <label className="label">Nome</label>
+                <input className="input" value={nome} onChange={e => setNome(e.target.value)} autoComplete="name" required />
+              </div>
+            )}
             <div className="field">
               <label className="label">Email</label>
               <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" required />
             </div>
             <div className="field">
               <label className="label">Senha</label>
-              <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" required />
+              <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} minLength={6} required />
             </div>
-            <button className="btn btn-primary" type="submit" disabled={loading || !baseUrl || !isSupabaseConfigured}>
-              {loading ? <><Spinner size={13} /> Entrando...</> : 'Entrar'}
+            {mode === 'signup' && (
+              <div className="field">
+                <label className="label">Confirmar senha</label>
+                <input className="input" type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" minLength={6} required />
+              </div>
+            )}
+            <button className="btn btn-primary" type="submit" disabled={loading || !canUseAuth}>
+              {loading ? <><Spinner size={13} /> {mode === 'signup' ? 'Criando...' : 'Entrando...'}</> : mode === 'signup' ? 'Criar conta' : 'Entrar'}
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => switchMode(mode === 'signup' ? 'login' : 'signup')}>
+              {mode === 'signup' ? 'Ja tenho conta' : 'Nao tem conta? Cadastre-se'}
             </button>
           </form>
         </div>
@@ -5601,21 +5660,30 @@ function LoginPage({ baseUrl, toast }) {
   );
 }
 
-function SemEmpresaPage({ isSuperAdmin, navigate }) {
+function SemEmpresaPage({ isSuperAdmin, navigate, currentUser, logout }) {
+  const email = currentUser?.email || currentUser?.user?.email || currentUser?.auth_user?.email || '';
   return (
     <div className="page-enter">
       <div className="card" style={{ maxWidth: 760 }}>
+        <div className="card-header">
+          <div>
+            <span className="card-title">Acesso pendente</span>
+            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>Vinculo com empresa necessario</div>
+          </div>
+        </div>
         <div className="card-body">
           <Alert type={isSuperAdmin ? 'info' : 'warn'}>
             {isSuperAdmin
               ? 'Nenhuma empresa ativa selecionada. Use o painel Admin para gerenciar empresas ou selecione uma empresa no topo.'
-              : 'Seu usuario ainda nao esta vinculado a nenhuma empresa.'}
+              : 'Seu cadastro foi criado, mas ainda nao esta vinculado a uma empresa. Entre em contato com o administrador do sistema.'}
           </Alert>
-          {isSuperAdmin && (
-            <div style={{ marginTop: 12 }}>
+          {email && <div style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 12 }}>Usuario logado: <strong>{email}</strong></div>}
+          <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+            {isSuperAdmin && (
               <button className="btn btn-primary btn-sm" onClick={() => navigate('admin')}>Abrir Admin</button>
-            </div>
-          )}
+            )}
+            <button className="btn btn-secondary btn-sm" onClick={logout}>Sair</button>
+          </div>
         </div>
       </div>
     </div>
@@ -5933,7 +6001,7 @@ function App() {
         const stored = localStorage.getItem(EMPRESA_ID_STORAGE_KEY) || '';
         const validStored = empresas.some(empresa => empresa.id === stored);
         const nextEmpresaId = validStored ? stored : (empresas.length === 1 ? empresas[0].id : '');
-        setCurrentUser(me || {});
+        setCurrentUser({ ...(me || {}), email: me?.email || session?.user?.email || '' });
         setMinhasEmpresas(empresas);
         setSelectedEmpresaId(nextEmpresaId);
         if (nextEmpresaId) localStorage.setItem(EMPRESA_ID_STORAGE_KEY, nextEmpresaId);
@@ -6112,7 +6180,7 @@ function App() {
       return <AdminPage baseUrl={baseUrl} toast={toast} isSuperAdmin={isSuperAdmin} />;
     }
     if (!selectedEmpresaId) {
-      return <SemEmpresaPage isSuperAdmin={isSuperAdmin} navigate={navigate} />;
+      return <SemEmpresaPage isSuperAdmin={isSuperAdmin} navigate={navigate} currentUser={currentUser} logout={logout} />;
     }
     switch (renderedActive) {
       case 'dashboard':
