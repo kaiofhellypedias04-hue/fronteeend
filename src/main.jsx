@@ -3565,6 +3565,7 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
   const [savingObs, setSavingObs] = useState(false);
   const [savingRule, setSavingRule] = useState(false);
   const [reapplyingRules, setReapplyingRules] = useState(false);
+  const [exportingDetailed, setExportingDetailed] = useState(false);
   const [smartSearch, setSmartSearch] = useState('');
   const queueLoadMorePendingRef = useRef(false);
   const forceQueueRefreshRef = useRef(false);
@@ -3892,6 +3893,47 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
     }));
   }, [visibleItems]);
 
+  const fetchAllQueueItems = async () => {
+    const loadedTotal = Number(filaData.total);
+    const pageSizeForExport = Math.max(
+      Number.isFinite(loadedTotal) && loadedTotal > 0 ? loadedTotal : 0,
+      visibleItems.length,
+      5000
+    );
+    const q = buildQueueSearchParams({
+      page: 1,
+      pageSize: pageSizeForExport,
+      filters,
+      smartSearch,
+    });
+    const data = await apiWithGroup(baseUrl, `/nfse?${q.toString()}`, grupos, grupoAtual, {
+      cache: 'no-store',
+      cacheTtl: 0,
+    });
+    const firstPageItems = extractResponseList(data).map(mapQueueItem);
+    const total = extractResponseTotal(data, firstPageItems.length);
+    if (!total || firstPageItems.length >= total) return firstPageItems;
+
+    const mergedById = new Map(firstPageItems.map(item => [item.id, item]));
+    const totalPages = Math.ceil(total / pageSizeForExport);
+    for (let nextPage = 2; nextPage <= totalPages; nextPage += 1) {
+      const nextQ = buildQueueSearchParams({
+        page: nextPage,
+        pageSize: pageSizeForExport,
+        filters,
+        smartSearch,
+      });
+      const nextData = await apiWithGroup(baseUrl, `/nfse?${nextQ.toString()}`, grupos, grupoAtual, {
+        cache: 'no-store',
+        cacheTtl: 0,
+      });
+      extractResponseList(nextData).map(mapQueueItem).forEach(item => {
+        if (!mergedById.has(item.id)) mergedById.set(item.id, item);
+      });
+    }
+    return [...mergedById.values()];
+  };
+
   const salvarObservacao = async () => {
     if (!selected) return;
     setSavingObs(true);
@@ -3976,14 +4018,31 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
   };
 
   const handleExportarDetalhado = async () => {
+    setExportingDetailed(true);
     try {
-      throw new Error('Exportar fila detalhada nao esta disponivel no Backend_Auditoria.');
+      const items = await fetchAllQueueItems();
+      if (!items.length) throw new Error('Nenhuma nota encontrada para exportar.');
+      const rows = items.map(item => ({
+        ...item,
+        competencia: item.queue_competencia === 'â€”' ? (item.competencia || '') : item.queue_competencia,
+        status_nota: item.queue_status_nota || '',
+        status_nota_pdf: getQueueDocumentStatusLabel(item.status_documental_pdf),
+        status: item.queue_status || '',
+        prioridade: normalizeQueuePriority(item.queue_prioridade) === 'alta' ? 'Alta' : normalizeQueuePriority(item.queue_prioridade) === 'media' ? 'Media' : 'Baixa',
+        responsavel: item.queue_responsavel || '',
+        conferencia: queueConferenceStatus(item.queue_responsavel),
+        observacao_interna: item.observacao_interna || '',
+      }));
+      dlCSV(rows, `${isVariantB ? 'fila_trabalho_b' : 'fila_trabalho'}_detalhada_${today()}.csv`);
+      toast(`ExportaÃ§Ã£o detalhada gerada com ${rows.length} nota(s).`, 'success');
     } catch (e) {
       apiDebugError('download failed', {
-        endpoint: 'rota-indisponivel',
+        endpoint: '/nfse',
         error: serializeApiError(e),
       });
       toast(e.message, 'error');
+    } finally {
+      setExportingDetailed(false);
     }
   };
 
@@ -4039,11 +4098,10 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
             </button>
             <button
               className="btn btn-ghost btn-sm"
-              disabled
+              disabled={exportingDetailed || !visibleItems.length}
               onClick={handleExportarDetalhado}
-              title="Indisponivel no Backend_Auditoria"
             >
-              <IconDown /> Exportar detalhado
+              {exportingDetailed ? <Spinner size={12} /> : <IconDown />} Exportar detalhado
             </button>
             <button className="btn btn-ghost btn-sm" onClick={refreshQueue}>
               <IconRefresh /> Atualizar
@@ -4487,6 +4545,7 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
   const buscaDebounced = useDebouncedValue(busca, 180);
   const [page, setPage]         = useState(1);
   const [pageSize, setPageSize] = useState(50);
+  const [allNfsePageSize, setAllNfsePageSize] = useState(500);
   const [filters, setFilters] = useState({
     status: '', municipio: '', cnpj_cpf: '',
     competencia: '', codigo_servico: '', somente_divergentes: false,
@@ -4498,12 +4557,12 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
   const allNfse = useAsync(signal => {
     const forceRefresh = forceAllNfseRefreshRef.current;
     if (forceRefresh) forceAllNfseRefreshRef.current = false;
-    return apiWithGroup(baseUrl, '/nfse?page=1&page_size=500', grupos, grupoAtual, {
+    return apiWithGroup(baseUrl, `/nfse?page=1&page_size=${allNfsePageSize}`, grupos, grupoAtual, {
       signal,
       cache: forceRefresh ? 'no-store' : undefined,
       cacheTtl: CRITICAL_LIST_CACHE_TTL_MS,
     });
-  }, [baseUrl, grupos, grupoAtual]);
+  }, [baseUrl, allNfsePageSize, grupos, grupoAtual]);
 
   // Notas da empresa selecionada
   const nfseList = useAsync(signal => {
@@ -4543,10 +4602,18 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
   }, [empresasVisiveis, buscaDebounced]);
 
   const emp = empresaSelecionada ? empresas.find(e => e.alias === empresaSelecionada) : null;
+  const allNfseItems = extractResponseList(allNfse.data);
+  const allNfseTotal = extractResponseTotal(allNfse.data, allNfseItems.length);
   const nfseItems = extractResponseList(nfseList.data);
   const empresasVirtual = useVirtualRows(empresasFiltradas, { rowHeight: 50, overscan: 8 });
   const nfseVirtual = useVirtualRows(nfseItems, { rowHeight: 48, overscan: 10 });
   const nfseTotal = extractResponseTotal(nfseList.data, nfseItems.length);
+  const canLoadAllNfse = allNfseItems.length > 0 && (
+    allNfseTotal > allNfseItems.length || allNfseItems.length >= allNfsePageSize
+  );
+  const canLoadAllNfseEmpresa = nfseItems.length > 0 && (
+    nfseTotal > nfseItems.length || nfseItems.length >= pageSize
+  );
   const sf = (k, v) => { clearApiCache(); setPage(1); setFilters(f => ({ ...f, [k]: v })); };
   const reloadAllNfse = () => {
     clearApiCache();
@@ -4557,6 +4624,21 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
     clearApiCache();
     forceNfseListRefreshRef.current = true;
     nfseList.reload().catch(() => {});
+  };
+  const carregarTodasNfse = () => {
+    clearApiCache();
+    forceAllNfseRefreshRef.current = true;
+    const nextPageSize = Math.max(allNfseTotal, allNfseItems.length, allNfsePageSize * 2, 5000);
+    if (nextPageSize === allNfsePageSize) allNfse.reload().catch(() => {});
+    else setAllNfsePageSize(nextPageSize);
+  };
+  const carregarTodasNfseEmpresa = () => {
+    clearApiCache();
+    forceNfseListRefreshRef.current = true;
+    setPage(1);
+    const nextPageSize = Math.max(nfseTotal, nfseItems.length, pageSize * 2, 5000);
+    if (nextPageSize === pageSize) nfseList.reload().catch(() => {});
+    else setPageSize(nextPageSize);
   };
 
   useEffect(() => {
@@ -4592,11 +4674,24 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
         actions={
           <>
             {empresaSelecionada ? (
-              <button className="btn btn-ghost btn-sm" disabled={!nfseItems.length}
-                onClick={() => dlCSV(nfseItems, `nfse_${empresaSelecionada}.csv`)}>
-                <IconDown /> CSV
+              <>
+                <button className="btn btn-ghost btn-sm"
+                  disabled={nfseList.loading || !canLoadAllNfseEmpresa}
+                  onClick={carregarTodasNfseEmpresa}>
+                  <IconDown /> Carregar todas
+                </button>
+                <button className="btn btn-ghost btn-sm" disabled={!nfseItems.length}
+                  onClick={() => dlCSV(nfseItems, `nfse_${empresaSelecionada}.csv`)}>
+                  <IconDown /> CSV
+                </button>
+              </>
+            ) : (
+              <button className="btn btn-ghost btn-sm"
+                disabled={allNfse.loading || !canLoadAllNfse}
+                onClick={carregarTodasNfse}>
+                <IconDown /> Carregar todas
               </button>
-            ) : null}
+            )}
             <button className="btn btn-ghost btn-sm" onClick={empresaSelecionada ? reloadNfseList : reloadAllNfse}>
               <IconRefresh /> Atualizar
             </button>
