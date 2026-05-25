@@ -57,9 +57,10 @@ const MENU = [
 ];
 
 const API_URL_STORAGE_KEY = 'nfse_url';
-const GROUP_ID_STORAGE_KEY = 'grupo_id_atual';
+const GROUP_ID_STORAGE_KEY = 'contexto_atual';
 const GROUP_LABEL_STORAGE_KEY = 'grupo_nome_atual';
 const GROUP_SLUG_STORAGE_KEY = 'grupo_slug_atual';
+const LOCAL_GROUP = { id: 'geral', label: 'Geral', slug: 'geral', certCount: null };
 
 const RAILWAY_API_BASE_URL = 'https://backeend-production-5a65.up.railway.app';
 const DEV_API_PROXY_BASE_URL = '/api';
@@ -193,8 +194,7 @@ function normalizeStoredGroupId(value) {
 }
 
 function readCurrentGroup() {
-  const storedId = normalizeStoredGroupId(localStorage.getItem(GROUP_ID_STORAGE_KEY));
-  return storedId;
+  return LOCAL_GROUP.id;
 }
 
 function clearStoredGroupSelection() {
@@ -205,7 +205,7 @@ function clearStoredGroupSelection() {
 
 function normalizeBackendGroup(raw) {
   if (!raw || typeof raw !== 'object') return null;
-  const id = String(firstDefinedValue(raw.id, raw.grupo_id, raw.uuid, raw.codigo) ?? '').trim();
+  const id = String(firstDefinedValue(raw.id, raw.uuid, raw.codigo) ?? '').trim();
   if (!id) return null;
   const label = String(firstDefinedValue(raw.nome, raw.name, raw.label, raw.descricao, raw.description, id) ?? id).trim();
   const certCountRaw = firstDefinedValue(
@@ -219,7 +219,6 @@ function normalizeBackendGroup(raw) {
   return {
     ...raw,
     id,
-    grupo_id: id,
     label: label || id,
     slug: String(firstDefinedValue(raw.slug, raw.key, raw.codigo, id) ?? id).trim(),
     certCount: Number.isFinite(certCount) ? certCount : null,
@@ -235,38 +234,28 @@ function normalizeGroupsPayload(payload) {
 
 function findGroupMeta(groups, groupId) {
   const id = normalizeStoredGroupId(groupId);
+  if (!id || id === LOCAL_GROUP.id) return LOCAL_GROUP;
   return (Array.isArray(groups) ? groups : []).find(group => group.id === id) || null;
 }
 
 function getGroupLabel(groups, groupId) {
-  return findGroupMeta(groups, groupId)?.label || '';
+  return findGroupMeta(groups, groupId)?.label || LOCAL_GROUP.label;
 }
 
 function selectedBackendGroupId(groups, groupId) {
-  const group = findGroupMeta(groups, groupId);
-  if (!group) return '';
-  return group.grupo_id || group.id;
+  return '';
 }
 
 function appendGroupParam(path, groups, groupId) {
-  const selectedId = selectedBackendGroupId(groups, groupId);
-  if (!selectedId) throw new Error('Selecione um grupo para continuar.');
-  const [pathname, query = ''] = String(path || '').split('?');
-  const q = new URLSearchParams(query);
-  q.set('grupo_id', selectedId);
-  const nextQuery = q.toString();
-  return nextQuery ? `${pathname}?${nextQuery}` : pathname;
+  return String(path || '');
 }
 
 function groupQueryEntries(groups, groupId) {
-  const selectedId = selectedBackendGroupId(groups, groupId);
-  if (!selectedId) throw new Error('Selecione um grupo para continuar.');
-  return { grupo_id: selectedId };
+  return {};
 }
 
 async function apiWithGroup(baseUrl, path, groups, groupId, opts = {}) {
-  const groupedPath = appendGroupParam(path, groups, groupId);
-  return api(baseUrl, groupedPath, opts);
+  return api(baseUrl, path, opts);
 }
 
 function groupHasNoCertificates(group) {
@@ -1182,8 +1171,7 @@ class PortalErrorBoundary extends React.Component {
     console.error('[portal] render error', { error, info });
   }
 
-  handleChangeGroup = () => {
-    clearStoredGroupSelection();
+  handleReload = () => {
     window.location.reload();
   };
 
@@ -1199,14 +1187,14 @@ class PortalErrorBoundary extends React.Component {
       }}>
         <div className="card" style={{ width: '100%', maxWidth: 560 }}>
           <div className="card-header">
-            <span className="card-title">Nao foi possivel carregar o portal para este grupo</span>
+            <span className="card-title">Nao foi possivel carregar o portal</span>
           </div>
           <div className="card-body" style={{ display: 'grid', gap: 12 }}>
             <Alert type="error">
-              Ocorreu um erro ao renderizar a tela atual. Troque o grupo e tente novamente.
+              Ocorreu um erro ao renderizar a tela atual. Recarregue o portal e tente novamente.
             </Alert>
-            <button className="btn btn-primary" onClick={this.handleChangeGroup} style={{ justifyContent: 'center' }}>
-              Trocar grupo
+            <button className="btn btn-primary" onClick={this.handleReload} style={{ justifyContent: 'center' }}>
+              Recarregar
             </button>
           </div>
         </div>
@@ -2045,23 +2033,11 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
     setRepeatLoadingId(id);
     setRepeatError('');
     setRepeatSuccess('');
-    try {
-      await apiWithGroup(baseUrl, `/processos/${id}/repetir`, grupos, grupoAtual, { method: 'POST' });
-      const message = 'Processo adicionado novamente à fila';
-      setRepeatSuccess(message);
-      toast(message, 'success');
-      window.dispatchEvent(new CustomEvent('nfse:queue-refresh'));
-      await Promise.allSettled([
-        procs.reload(),
-        procModalOpen ? fullProcs.reload() : Promise.resolve(),
-      ]);
-    } catch (e) {
-      const message = `Nao foi possivel repetir o processo${e?.message ? `: ${e.message}` : '.'}`;
-      setRepeatError(message);
-      toast(message, 'error');
-    } finally {
-      setRepeatLoadingId('');
-    }
+    const unavailableMessage = 'Repetir processo nao esta disponivel no Backend_Auditoria.';
+    setRepeatError(unavailableMessage);
+    toast(unavailableMessage, 'error');
+    setRepeatLoadingId('');
+    return;
   };
 
   const statCards = [
@@ -2080,8 +2056,8 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
       icon: IconPlay,
       title: 'Execucoes',
       value: stats.execucoes,
-      detail: 'Execucoes do grupo selecionado',
-      helper: 'Consulta filtrada pelo grupo atual',
+      detail: 'Execucoes recentes',
+      helper: 'Consulta direta no Backend_Auditoria',
     },
     {
       key: 'processos',
@@ -2089,8 +2065,8 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
       icon: IconProcess,
       title: 'Processos',
       value: stats.processos,
-      detail: 'Processos do grupo selecionado',
-      helper: 'Consulta filtrada pelo grupo atual',
+      detail: 'Processos recentes',
+      helper: 'Consulta direta no Backend_Auditoria',
     },
     {
       key: 'jobs',
@@ -2620,7 +2596,7 @@ function ExecucaoPage({ baseUrl, toast, grupoAtual, grupos }) {
               <div className="alias-list">
                 {groupEmptyMessage ? (
                   <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
-                    Este grupo nÃ£o possui certificados vinculados.
+                    Nenhum certificado vinculado.
                   </div>
                 ) : lista.length === 0 && (
                   <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-3)', fontSize: 12 }}>
@@ -3248,35 +3224,7 @@ function canDeleteProcess(status) {
 }
 
 function ProcessActions({ process, busy, onCancel, onDelete, compact = false }) {
-  const actions = [];
-
-  if (canCancelProcess(process?.status)) {
-    actions.push(
-      <button
-        key="cancel"
-        className={cn('btn', compact ? 'btn-xs' : 'btn-sm', 'btn-ghost')}
-        disabled={busy}
-        onClick={() => onCancel(process)}
-      >
-        {busy ? <Spinner size={12} /> : <><IconStop /> Cancelar</>}
-      </button>
-    );
-  }
-
-  if (canDeleteProcess(process?.status)) {
-    actions.push(
-      <button
-        key="delete"
-        className={cn('btn', compact ? 'btn-xs' : 'btn-sm', 'btn-danger')}
-        disabled={busy}
-        onClick={() => onDelete(process)}
-      >
-        {busy ? <Spinner size={12} /> : <><IconTrash /> Excluir</>}
-      </button>
-    );
-  }
-
-  return actions.length ? <>{actions}</> : null;
+  return null;
 }
 
 function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
@@ -3399,9 +3347,11 @@ function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
     const { type, process } = confirmAction;
     setActionLoadingId(process.id);
     try {
+      toast('Cancelar ou excluir processos nao esta disponivel no Backend_Auditoria.', 'error');
+      return;
       const data = type === 'cancel'
-        ? await apiWithGroup(baseUrl, `/processos/${process.id}/cancelar`, grupos, grupoAtual, { method: 'POST' })
-        : await apiWithGroup(baseUrl, `/processos/${process.id}`, grupos, grupoAtual, { method: 'DELETE' });
+        ? await apiWithGroup(baseUrl, `/processos/${process.id}`, grupos, grupoAtual, { method: 'GET' })
+        : await apiWithGroup(baseUrl, `/processos/${process.id}`, grupos, grupoAtual, { method: 'GET' });
 
       if (type === 'cancel') {
         const status = normalizeProcessStatus(data?.status || 'cancelled');
@@ -3460,7 +3410,7 @@ function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
           {allProcs.loading ? <Loading /> : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
               {empresasFiltradas.length === 0
-                ? <Empty msg={groupHasNoCertificates(selectedGroup) ? 'Este grupo nÃ£o possui certificados vinculados.' : 'Nenhuma empresa encontrada'} />
+                ? <Empty msg="Nenhuma empresa encontrada" />
                 : empresasFiltradas.map(e => (
                   <div
                     key={e.alias}
@@ -4082,39 +4032,10 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
 
   const handleExportarDetalhado = async () => {
     try {
-      if (queueDateRangeError) throw new Error(queueDateRangeError);
-
-      const q = buildQueueSearchParams({
-        filters,
-        smartSearch,
-        includePagination: false,
-      });
-
-      const query = appendGroupParam(`/nfse/exportar-fila-detalhada${q.toString() ? `?${q.toString()}` : ''}`, grupos, grupoAtual).split('?')[1] || '';
-      const endpoint = `/nfse/exportar-fila-detalhada${query ? `?${query}` : ''}`;
-      const url = buildApiUrl(baseUrl, endpoint);
-      apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url, method: 'GET' });
-      const res = await fetch(url);
-      apiDebugLog('download response status', { endpoint, url, status: res.status, ok: res.ok });
-      if (!res.ok) {
-        let message = `HTTP ${res.status}`;
-        const text = await res.text();
-        if (text) {
-          try {
-            const data = JSON.parse(text);
-            message = data?.detail || data?.message || text;
-          } catch {
-            message = text;
-          }
-        }
-        throw new Error(message);
-      }
-
-      const blob = await res.blob();
-      downloadBrowserBlob(blob, 'fila_detalhada.xlsx');
+      throw new Error('Exportar fila detalhada nao esta disponivel no Backend_Auditoria.');
     } catch (e) {
       apiDebugError('download failed', {
-        endpoint: '/nfse/exportar-fila-detalhada',
+        endpoint: 'rota-indisponivel',
         error: serializeApiError(e),
       });
       toast(e.message, 'error');
@@ -4173,8 +4094,9 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
             </button>
             <button
               className="btn btn-ghost btn-sm"
-              disabled={!visibleItems.length}
+              disabled
               onClick={handleExportarDetalhado}
+              title="Indisponivel no Backend_Auditoria"
             >
               <IconDown /> Exportar detalhado
             </button>
@@ -4749,7 +4671,7 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
           {allNfse.error ? <Alert type="error">{allNfse.error}</Alert> : null}
           {groupFilterEmpty ? (
             <Alert type="info">
-              {groupHasNoCertificates(selectedGroup) ? 'Este grupo nÃ£o possui certificados vinculados.' : 'Nenhum item encontrado para este grupo.'}
+              {groupHasNoCertificates(selectedGroup) ? 'Nenhum certificado vinculado.' : 'Nenhum item encontrado.'}
             </Alert>
           ) : null}
 
@@ -4769,7 +4691,7 @@ function NFSePage({ baseUrl, toast, grupoAtual, grupos }) {
                     </tr></thead>
                     <tbody>
                       {empresasFiltradas.length === 0
-                        ? <Empty msg={groupFilterEmpty ? 'Nenhum item neste grupo.' : 'Nenhuma nota encontrada'} />
+                        ? <Empty msg={groupFilterEmpty ? 'Nenhum item encontrado.' : 'Nenhuma nota encontrada'} />
                         : (
                           <>
                             {empresasVirtual.paddingTop > 0 && (
@@ -5199,9 +5121,6 @@ function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
     try {
       const fd = new FormData();
       ['alias', 'client_name', 'password'].forEach(k => fd.append(k, form[k]));
-      const selectedGroupId = selectedBackendGroupId(grupos, grupoAtual);
-      if (!selectedGroupId) throw new Error('Selecione um grupo para cadastrar certificado.');
-      fd.append('grupo_id', selectedGroupId);
       fd.append('file', form.file);
       const resp = await api(baseUrl, '/certificados', { method: 'POST', body: fd });
       if (resp && (resp.ok === false || resp.success === false || resp.error)) {
@@ -5231,7 +5150,7 @@ function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
     if (passForm.password !== passForm.confirm) { toast('As senhas não coincidem.', 'error'); return; }
     setSaving(true);
     try {
-      await apiWithGroup(baseUrl, `/certificados/${current.alias}/senha`, grupos, grupoAtual, { method: 'PUT', body: { password: passForm.password } });
+      await apiWithGroup(baseUrl, `/certificados/${current.alias}`, grupos, grupoAtual, { method: 'PUT', body: { password: passForm.password } });
       toast('Senha redefinida.', 'success'); setModal(null);
     } catch (e) { toast(e.message, 'error'); } finally { setSaving(false); }
   };
@@ -5254,7 +5173,7 @@ function CertificadosPage({ baseUrl, toast, grupoAtual, grupos }) {
         }
       />
       {list.error ? <Alert type="error">{list.error}</Alert> : null}
-      {!list.loading && certificados.length === 0 && selectedBackendGroupId(grupos, grupoAtual) ? (
+      {!list.loading && certificados.length === 0 ? (
         <Alert type="info">
           {groupHasNoCertificates(selectedGroup) ? 'Este grupo nÃ£o possui certificados vinculados.' : 'Nenhum certificado encontrado para este grupo.'}
         </Alert>
@@ -5393,7 +5312,7 @@ function CredenciaisPage({ baseUrl, toast, grupoAtual, grupos }) {
   const submitNew = async e => {
     e.preventDefault(); setSaving(true);
     try {
-      await apiWithGroup(baseUrl, '/credenciais', grupos, grupoAtual, { method: 'POST', body: { ...form, ...groupQueryEntries(grupos, grupoAtual) } });
+      await apiWithGroup(baseUrl, '/credenciais', grupos, grupoAtual, { method: 'POST', body: { ...form } });
       toast('Credencial cadastrada.', 'success');
       setModal(null); setForm({ alias: '', cpf_cnpj: '', password: '' }); list.reload();
     } catch (e) { toast(e.message, 'error'); } finally { setSaving(false); }
@@ -5412,7 +5331,7 @@ function CredenciaisPage({ baseUrl, toast, grupoAtual, grupos }) {
     if (passForm.password !== passForm.confirm) { toast('As senhas não coincidem.', 'error'); return; }
     setSaving(true);
     try {
-      await apiWithGroup(baseUrl, `/credenciais/${current.alias}/senha`, grupos, grupoAtual, { method: 'PUT', body: { password: passForm.password } });
+      await apiWithGroup(baseUrl, `/credenciais/${current.alias}`, grupos, grupoAtual, { method: 'PUT', body: { password: passForm.password } });
       toast('Senha redefinida.', 'success'); setModal(null);
     } catch (e) { toast(e.message, 'error'); } finally { setSaving(false); }
   };
@@ -5615,7 +5534,6 @@ function ConfiguracoesPage({ baseUrl, setBaseUrl, toast }) {
               ['POST /agendar',                 'JSON — modo automático diário'],
               ['PUT  /nfse/{id}',               'JSON — salvar edições do relatório'],
               ['GET  /processos/{id}/arquivos/{arq}/download', 'stream — MinIO ou local'],
-              ['POST /admin/limpar-minio',      'limpeza manual de arquivos antigos'],
             ].map(([rota, desc]) => (
               <div key={rota} style={{ display: 'flex', gap: 8, padding: '4px 0', borderBottom: '1px solid var(--border-soft)' }}>
                 <code style={{ color: 'var(--accent)', fontSize: 11, minWidth: 240 }}>{rota}</code>
@@ -5630,67 +5548,6 @@ function ConfiguracoesPage({ baseUrl, setBaseUrl, toast }) {
 }
 
 // ── App Shell ────────────────────────────────────────────────
-function GroupSelectionScreen({ groups, loading, error, onSelect, onRetry }) {
-  const options = Array.isArray(groups) ? groups : [];
-  return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: 24,
-      background: 'var(--bg)',
-    }}>
-      <div className="card" style={{ width: '100%', maxWidth: 560 }}>
-        <div className="card-header">
-          <span className="card-title">Selecione seu grupo</span>
-        </div>
-        <div className="card-body">
-          <div style={{ display: 'grid', gap: 12 }}>
-            {loading ? <Loading label="Carregando grupos..." /> : null}
-            {error ? (
-              <Alert type="error">
-                Nao foi possivel carregar os grupos. Verifique a conexao com a API e tente novamente.
-              </Alert>
-            ) : null}
-            {!loading && error ? (
-              <button className="btn btn-primary" onClick={onRetry} style={{ justifyContent: 'center' }}>
-                Tentar novamente
-              </button>
-            ) : null}
-            {!loading && !error && options.length === 0 ? (
-              <Alert type="info">Nenhum grupo disponivel para este usuario.</Alert>
-            ) : null}
-            {!loading && !error && options.map(group => (
-              <button
-                key={group.id}
-                className="btn btn-ghost"
-                onClick={() => onSelect(group.id)}
-                style={{
-                  justifyContent: 'space-between',
-                  padding: '18px 20px',
-                  fontSize: 15,
-                  border: '1px solid var(--border)',
-                  background: 'var(--surface-2)',
-                }}
-              >
-                <span>{group.label}</span>
-                {group.certCount !== null && group.certCount !== undefined ? (
-                  <span style={{ color: 'var(--text-3)', fontSize: 12 }}>{group.certCount} certificado(s)</span>
-                ) : null}
-                <span style={{ color: 'var(--accent)' }}>Entrar</span>
-              </button>
-            ))}
-          </div>
-          <div style={{ marginTop: 16, fontSize: 11, color: 'var(--text-3)', lineHeight: 1.5 }}>
-            Os grupos sao carregados do backend e todas as consultas usam o grupo selecionado.
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function App() {
   const [active, setActive] = useState('dashboard');
   const [renderedActive, setRenderedActive] = useState('dashboard');
@@ -5701,20 +5558,14 @@ function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopSidebarVisible, setDesktopSidebarVisible] = useState(true);
   const { toasts, toast } = useToast();
-  const gruposRequest = useAsync(signal => api(baseUrl, '/grupos', { signal, cacheTtl: 120_000 }), [baseUrl]);
-  const grupos = useMemo(() => (
-    gruposRequest.error ? [] : normalizeGroupsPayload(gruposRequest.data)
-  ), [gruposRequest.data, gruposRequest.error]);
+  const grupos = useMemo(() => [LOCAL_GROUP], []);
 
   const selecionarGrupo = groupKey => {
-    const next = normalizeStoredGroupId(groupKey);
-    if (!next) return;
-    const selectedGroup = findGroupMeta(grupos, next);
-    if (!selectedGroup) return;
+    const next = LOCAL_GROUP.id;
     clearApiCache();
     localStorage.setItem(GROUP_ID_STORAGE_KEY, next);
-    localStorage.setItem(GROUP_LABEL_STORAGE_KEY, selectedGroup.label || next);
-    localStorage.setItem(GROUP_SLUG_STORAGE_KEY, selectedGroup.slug || next);
+    localStorage.setItem(GROUP_LABEL_STORAGE_KEY, LOCAL_GROUP.label);
+    localStorage.setItem(GROUP_SLUG_STORAGE_KEY, LOCAL_GROUP.slug);
     setActive('dashboard');
     setMobileOpen(false);
     setDesktopSidebarVisible(true);
@@ -5724,31 +5575,26 @@ function App() {
 
   const trocarGrupo = () => {
     clearApiCache();
-    clearStoredGroupSelection();
+    localStorage.setItem(GROUP_ID_STORAGE_KEY, LOCAL_GROUP.id);
+    localStorage.setItem(GROUP_LABEL_STORAGE_KEY, LOCAL_GROUP.label);
+    localStorage.setItem(GROUP_SLUG_STORAGE_KEY, LOCAL_GROUP.slug);
     setActive('dashboard');
     setMobileOpen(false);
     setDesktopSidebarVisible(true);
     setApiStatus('idle');
-    setGrupoAtual('');
+    setGrupoAtual(LOCAL_GROUP.id);
   };
 
   useEffect(() => {
-    if (!grupoAtual || gruposRequest.loading) return;
-    if (gruposRequest.error) return;
-    const selectedGroup = findGroupMeta(grupos, grupoAtual);
-    if (!selectedGroup) {
-      clearStoredGroupSelection();
-      setGrupoAtual('');
-      return;
-    }
-    localStorage.setItem(GROUP_LABEL_STORAGE_KEY, selectedGroup.label || grupoAtual);
-    localStorage.setItem(GROUP_SLUG_STORAGE_KEY, selectedGroup.slug || grupoAtual);
-  }, [grupoAtual, grupos, gruposRequest.loading, gruposRequest.error]);
+    if (grupoAtual === LOCAL_GROUP.id) return;
+    setGrupoAtual(LOCAL_GROUP.id);
+  }, [grupoAtual]);
 
   useEffect(() => {
-    if (grupoAtual || gruposRequest.loading || gruposRequest.error) return;
-    if (grupos.length === 1) selecionarGrupo(grupos[0].id);
-  }, [grupoAtual, grupos, gruposRequest.loading, gruposRequest.error]);
+    localStorage.setItem(GROUP_ID_STORAGE_KEY, LOCAL_GROUP.id);
+    localStorage.setItem(GROUP_LABEL_STORAGE_KEY, LOCAL_GROUP.label);
+    localStorage.setItem(GROUP_SLUG_STORAGE_KEY, LOCAL_GROUP.slug);
+  }, []);
 
   useEffect(() => {
     const cleaned = normalizeBaseUrl(baseUrl);
@@ -5764,10 +5610,6 @@ function App() {
   }, [baseUrl]);
 
   useEffect(() => {
-    if (!grupoAtual) {
-      setApiStatus('idle');
-      return;
-    }
     if (!baseUrl) {
       setApiStatus('err');
       return;
@@ -5779,7 +5621,7 @@ function App() {
     check();
     const iv = setInterval(check, 30000);
     return () => clearInterval(iv);
-  }, [baseUrl, grupoAtual]);
+  }, [baseUrl]);
 
   useEffect(() => {
     if (active !== 'fila_trabalho' && active !== 'fila_trabalho_b') {
@@ -5805,7 +5647,7 @@ function App() {
   }, [baseUrl, grupos, grupoAtual]);
 
   useEffect(() => {
-    if (!grupoAtual || !baseUrl) return undefined;
+    if (!baseUrl) return undefined;
     const warm = () => warmDefaultQueue();
     if ('requestIdleCallback' in window) {
       const id = window.requestIdleCallback(warm, { timeout: 2500 });
@@ -5813,7 +5655,7 @@ function App() {
     }
     const id = setTimeout(warm, 900);
     return () => clearTimeout(id);
-  }, [baseUrl, grupoAtual, warmDefaultQueue]);
+  }, [baseUrl, warmDefaultQueue]);
 
   const navigate = useCallback(k => {
     if (k === 'fila_trabalho' || k === 'fila_trabalho_b') warmDefaultQueue();
@@ -5821,62 +5663,7 @@ function App() {
     React.startTransition(() => setActive(k));
   }, [warmDefaultQueue]);
 
-  if (!grupoAtual) {
-    return (
-      <>
-        <GroupSelectionScreen
-          groups={grupos}
-          loading={gruposRequest.loading}
-          error={gruposRequest.error}
-          onSelect={selecionarGrupo}
-          onRetry={() => gruposRequest.reload().catch(() => {})}
-        />
-        <ToastContainer toasts={toasts} />
-      </>
-    );
-  }
-
-  if (gruposRequest.error) {
-    return (
-      <>
-        <GroupSelectionScreen
-          groups={[]}
-          loading={false}
-          error={gruposRequest.error}
-          onSelect={selecionarGrupo}
-          onRetry={() => gruposRequest.reload().catch(() => {})}
-        />
-        <ToastContainer toasts={toasts} />
-      </>
-    );
-  }
-
-  if (gruposRequest.loading && !gruposRequest.error) {
-    return (
-      <>
-        <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
-          <Loading label="Carregando grupos..." />
-        </div>
-        <ToastContainer toasts={toasts} />
-      </>
-    );
-  }
-
   const selectedGroupMeta = findGroupMeta(grupos, grupoAtual);
-  if (!selectedGroupMeta) {
-    return (
-      <>
-        <GroupSelectionScreen
-          groups={grupos}
-          loading={false}
-          error=""
-          onSelect={selecionarGrupo}
-          onRetry={() => gruposRequest.reload().catch(() => {})}
-        />
-        <ToastContainer toasts={toasts} />
-      </>
-    );
-  }
 
   const isQueuePageActive = active === 'fila_trabalho' || active === 'fila_trabalho_b';
 
@@ -5919,9 +5706,6 @@ function App() {
       <div className="sidebar-footer">
         <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
           <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{getGroupLabel(grupos, grupoAtual)}</div>
-          <button className="btn btn-ghost btn-sm" onClick={trocarGrupo} style={{ justifyContent: 'center' }}>
-            Trocar grupo
-          </button>
         </div>
         <div className="api-status">
           <div className={cn('status-dot', apiStatus)} />
@@ -6003,9 +5787,6 @@ function App() {
           <span className="topbar-sep">/</span>
           <span className="topbar-sub">Portal de Auditoria Fiscal</span>
           <div className="topbar-actions">
-            <button className="btn btn-ghost btn-sm" onClick={trocarGrupo}>
-              Trocar grupo
-            </button>
             <div className="api-status" style={{ background: 'transparent', border: 'none', padding: '4px 8px' }}>
               <div className={cn('status-dot', apiStatus)} />
               <span style={{ fontSize: 11 }}>{baseUrl}</span>
