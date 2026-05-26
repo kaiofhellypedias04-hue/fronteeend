@@ -4,7 +4,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import { isSupabaseConfigured, supabase } from './lib/supabase.js';
 import '../constants/app.js';
 import '../utils/format.js';
 import '../utils/date.js';
@@ -42,18 +41,6 @@ if (IS_DEV) {
   console.info('[main.jsx] dev bundle loaded', { loadedAt: new Date().toISOString() });
 }
 
-const authContext = {
-  accessToken: '',
-  selectedEmpresaId: '',
-  onUnauthorized: null,
-};
-
-function setApiAuthContext({ accessToken = '', selectedEmpresaId = '', onUnauthorized = null } = {}) {
-  authContext.accessToken = accessToken || '';
-  authContext.selectedEmpresaId = selectedEmpresaId || '';
-  authContext.onUnauthorized = onUnauthorized;
-}
-
 // ── Constantes ──────────────────────────────────────────────
 const MENU = [
   { key: 'dashboard',    label: 'Dashboard',       section: 'visão geral',  icon: IconDashboard },
@@ -71,7 +58,6 @@ const MENU = [
 const GROUP_ID_STORAGE_KEY = 'contexto_atual';
 const GROUP_LABEL_STORAGE_KEY = 'grupo_nome_atual';
 const GROUP_SLUG_STORAGE_KEY = 'grupo_slug_atual';
-const EMPRESA_ID_STORAGE_KEY = 'nfse_empresa_ativa';
 const LOCAL_GROUP = { id: 'geral', label: 'Geral', slug: 'geral', certCount: null };
 
 const DEFAULT_API_BASE_URL = normalizeBaseUrl(VITE_API_BASE_URL);
@@ -85,7 +71,7 @@ function readViteApiBaseUrl() {
 function resolveDefaultApiUrl() {
   const viteUrl = normalizeBaseUrl(readViteApiBaseUrl());
   if (viteUrl) return viteUrl;
-  return '';
+  return 'http://localhost:8000';
 }
 
 
@@ -357,64 +343,12 @@ class ApiError extends Error {
 
 function parseApiErrorMessage(status, data, fallback = '') {
   const backendMessage = data?.detail || data?.message || data?.error || fallback;
-  if (status === 401) return backendMessage || 'Sessao expirada. Faça login novamente.';
+  if (status === 401) return backendMessage || 'Acesso nao autorizado pela API.';
   if (status === 403) return backendMessage || 'Voce nao tem permissao para acessar esta area.';
-  if (status === 400 || status === 422) return backendMessage || 'Selecione uma empresa para continuar.';
+  if (status === 400 || status === 422) return backendMessage || 'Requisicao invalida.';
   if (status === 404) return backendMessage || 'Recurso nao encontrado.';
   if (status >= 500) return backendMessage || 'Erro interno do backend.';
   return backendMessage || `HTTP ${status}`;
-}
-
-function shouldSendEmpresaHeader(path) {
-  const endpoint = normalizeApiPath(path);
-  if (endpoint === '/health') return false;
-  if (endpoint === '/me') return false;
-  if (endpoint === '/minhas-empresas') return false;
-  if (endpoint.startsWith('/admin/')) return false;
-  return true;
-}
-
-function applyAuthHeaders(headers, endpoint) {
-  if (authContext.accessToken && !headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${authContext.accessToken}`);
-  }
-  if (authContext.selectedEmpresaId && shouldSendEmpresaHeader(endpoint) && !headers.has('X-Empresa-ID')) {
-    headers.set('X-Empresa-ID', authContext.selectedEmpresaId);
-  }
-}
-
-async function ensureAuthToken() {
-  if (authContext.accessToken || !supabase) return authContext.accessToken;
-  const { data } = await supabase.auth.getSession();
-  authContext.accessToken = data?.session?.access_token || '';
-  return authContext.accessToken;
-}
-
-function normalizeEmpresa(item) {
-  if (!item) return null;
-  const id = String(item.id ?? item.empresa_id ?? item.uuid ?? '').trim();
-  if (!id) return null;
-  return {
-    ...item,
-    id,
-    nome: item.nome || item.razao_social || item.name || item.label || `Empresa ${id}`,
-    ativa: item.ativa ?? item.active ?? true,
-  };
-}
-
-function normalizeEmpresas(payload) {
-  const list = extractResponseList(payload);
-  return list.map(normalizeEmpresa).filter(Boolean);
-}
-
-function getUserRole(user) {
-  return String(user?.role || user?.papel || user?.perfil || user?.tipo || user?.app_role || '').toLowerCase();
-}
-
-function isUserSuperAdmin(user) {
-  if (user?.is_super_admin === true || user?.super_admin === true) return true;
-  const role = getUserRole(user);
-  return role === 'super_admin' || role === 'superadmin' || role === 'admin_global';
 }
 
 function getExportCompetencia(item) {
@@ -766,8 +700,6 @@ async function api(baseUrl, path, opts = {}) {
     headers.set('Content-Type', 'application/json');
     req.body = JSON.stringify(opts.body);
   }
-  await ensureAuthToken();
-  applyAuthHeaders(headers, endpoint);
   const isCacheable = method === 'GET' && !req.body && opts.cache !== 'no-store';
   const key = isCacheable ? apiCacheKey(normalizeBaseUrl(baseUrl), endpoint) : '';
   const ttl = Number.isFinite(opts.cacheTtl) ? opts.cacheTtl : API_CACHE_TTL_MS;
@@ -814,7 +746,6 @@ async function api(baseUrl, path, opts = {}) {
       let data;
       try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
       if (!res.ok) {
-        if (res.status === 401) authContext.onUnauthorized?.();
         throw new ApiError(parseApiErrorMessage(res.status, data, txt), { status: res.status, data });
       }
       const responseItems = extractResponseList(data);
@@ -860,13 +791,9 @@ async function fetchProcessFileBlob(baseUrl, processId, arquivoId, grupos = [], 
   const url = buildApiUrl(baseUrl, endpoint);
   apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url, method: 'GET' });
   try {
-    const headers = new Headers();
-    await ensureAuthToken();
-    applyAuthHeaders(headers, endpoint);
-    const res = await fetch(url, { headers });
+    const res = await fetch(url);
     apiDebugLog('download response status', { endpoint, url, status: res.status, ok: res.ok });
     if (!res.ok) {
-      if (res.status === 401) authContext.onUnauthorized?.();
       throw new ApiError(parseApiErrorMessage(res.status, null), { status: res.status });
     }
     return res.blob();
@@ -884,17 +811,13 @@ async function fetchProcessFileBlob(baseUrl, processId, arquivoId, grupos = [], 
 async function fetchProtectedBlob(baseUrl, path) {
   const endpoint = normalizeApiPath(path);
   const url = buildApiUrl(baseUrl, endpoint);
-  const headers = new Headers();
-  await ensureAuthToken();
-  applyAuthHeaders(headers, endpoint);
   apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url, method: 'GET' });
-  const res = await fetch(url, { headers });
+  const res = await fetch(url);
   apiDebugLog('download response status', { endpoint, url, status: res.status, ok: res.ok });
   if (!res.ok) {
     let data = null;
     const txt = await res.text().catch(() => '');
     try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
-    if (res.status === 401) authContext.onUnauthorized?.();
     throw new ApiError(parseApiErrorMessage(res.status, data, txt), { status: res.status, data });
   }
   return res.blob();
@@ -927,10 +850,7 @@ function downloadUrl(url, filename) {
 
 async function downloadResolvedUrl(url, filename) {
   try {
-    const headers = new Headers();
-    await ensureAuthToken();
-    applyAuthHeaders(headers, url);
-    const res = await fetch(url, { headers });
+    const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const blob = await res.blob();
     downloadBrowserBlob(blob, filename);
@@ -5548,373 +5468,6 @@ function CredenciaisPage({ baseUrl, toast, grupoAtual, grupos }) {
   );
 }
 
-function LoginPage({ baseUrl, toast, onAuthenticated }) {
-  const [mode, setMode] = useState('login');
-  const [nome, setNome] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [successMessage, setSuccessMessage] = useState('');
-
-  const canUseAuth = Boolean(baseUrl && isSupabaseConfigured);
-
-  const submit = async event => {
-    event.preventDefault();
-    if (!supabase) {
-      toast('Configure VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no .env para habilitar login e cadastro.', 'error');
-      return;
-    }
-    setLoading(true);
-    setSuccessMessage('');
-    try {
-      if (mode === 'signup') {
-        const cleanName = nome.trim();
-        const cleanEmail = email.trim();
-        if (!cleanName) throw new Error('Informe seu nome.');
-        if (!cleanEmail) throw new Error('Informe seu email.');
-        if (!password) throw new Error('Informe uma senha.');
-        if (password.length < 6) throw new Error('A senha deve ter no minimo 6 caracteres.');
-        if (password !== confirmPassword) throw new Error('A confirmacao de senha deve ser igual a senha.');
-
-        const { data, error } = await supabase.auth.signUp({
-          email: cleanEmail,
-          password,
-          options: { data: { nome: cleanName } },
-        });
-        if (error) throw error;
-        const needsEmailConfirmation = !data?.session;
-        const msg = needsEmailConfirmation
-          ? 'Cadastro realizado. Verifique seu e-mail para confirmar a conta. Depois, aguarde o vinculo com uma empresa.'
-          : 'Cadastro realizado. Aguarde um administrador vincular seu usuario a uma empresa.';
-        setSuccessMessage(msg);
-        toast('Cadastro realizado.', 'success');
-        setMode('login');
-        setPassword('');
-        setConfirmPassword('');
-      } else {
-        const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-        if (error) throw error;
-        const sessionResult = data?.session || (await supabase.auth.getSession())?.data?.session || null;
-        if (!sessionResult) throw new Error('Login aceito, mas a sessao nao foi criada. Confirme o e-mail ou tente novamente.');
-        onAuthenticated?.(sessionResult);
-        toast('Login realizado com sucesso.', 'success');
-      }
-    } catch (e) {
-      toast(e.message || (mode === 'signup' ? 'Nao foi possivel criar a conta.' : 'Nao foi possivel entrar.'), 'error');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const switchMode = nextMode => {
-    setMode(nextMode);
-    setPassword('');
-    setConfirmPassword('');
-    setSuccessMessage('');
-  };
-
-  return (
-    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, background: 'var(--bg)' }}>
-      <div className="card" style={{ width: '100%', maxWidth: 420 }}>
-        <div className="card-header">
-          <div>
-            <span className="card-title">{mode === 'signup' ? 'Criar cadastro' : 'Portal NFS-e'}</span>
-            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>
-              {mode === 'signup' ? 'Solicite acesso ao Portal NFS-e' : 'Entre para acessar sua empresa'}
-            </div>
-          </div>
-        </div>
-        <div className="card-body">
-          {!baseUrl && <Alert type="error">Configure VITE_API_BASE_URL no .env para conectar ao backend.</Alert>}
-          {!isSupabaseConfigured && <Alert type="error">Configure VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no .env para habilitar login e cadastro.</Alert>}
-          {successMessage && <Alert type="success">{successMessage}</Alert>}
-          <form className="form-grid" onSubmit={submit}>
-            {mode === 'signup' && (
-              <div className="field">
-                <label className="label">Nome</label>
-                <input className="input" value={nome} onChange={e => setNome(e.target.value)} autoComplete="name" required />
-              </div>
-            )}
-            <div className="field">
-              <label className="label">Email</label>
-              <input className="input" type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" required />
-            </div>
-            <div className="field">
-              <label className="label">Senha</label>
-              <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} minLength={6} required />
-            </div>
-            {mode === 'signup' && (
-              <div className="field">
-                <label className="label">Confirmar senha</label>
-                <input className="input" type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} autoComplete="new-password" minLength={6} required />
-              </div>
-            )}
-            <button className="btn btn-primary" type="submit" disabled={loading || !canUseAuth}>
-              {loading ? <><Spinner size={13} /> {mode === 'signup' ? 'Criando...' : 'Entrando...'}</> : mode === 'signup' ? 'Criar conta' : 'Entrar'}
-            </button>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => switchMode(mode === 'signup' ? 'login' : 'signup')}>
-              {mode === 'signup' ? 'Ja tenho conta' : 'Nao tem conta? Cadastre-se'}
-            </button>
-          </form>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SemEmpresaPage({ isSuperAdmin, navigate, currentUser, logout }) {
-  const email = currentUser?.email || currentUser?.user?.email || currentUser?.auth_user?.email || '';
-  return (
-    <div className="page-enter">
-      <div className="card" style={{ maxWidth: 760 }}>
-        <div className="card-header">
-          <div>
-            <span className="card-title">Acesso pendente</span>
-            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>Vinculo com empresa necessario</div>
-          </div>
-        </div>
-        <div className="card-body">
-          <Alert type={isSuperAdmin ? 'info' : 'warn'}>
-            {isSuperAdmin
-              ? 'Nenhuma empresa ativa selecionada. Use o painel Admin para gerenciar empresas ou selecione uma empresa no topo.'
-              : 'Seu cadastro foi criado, mas ainda nao esta vinculado a uma empresa. Entre em contato com o administrador do sistema.'}
-          </Alert>
-          {email && <div style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 12 }}>Usuario logado: <strong>{email}</strong></div>}
-          <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-            {isSuperAdmin && (
-              <button className="btn btn-primary btn-sm" onClick={() => navigate('admin')}>Abrir Admin</button>
-            )}
-            <button className="btn btn-secondary btn-sm" onClick={logout}>Sair</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AdminPage({ baseUrl, toast, isSuperAdmin }) {
-  const [selectedEmpresaId, setSelectedEmpresaId] = useState('');
-  const [empresaForm, setEmpresaForm] = useState({ nome: '', cnpj: '', ativa: true });
-  const [editingEmpresa, setEditingEmpresa] = useState(null);
-  const [userForm, setUserForm] = useState({ user_id: '', email: '', papel: 'user', ativo: true });
-  const [editingUserId, setEditingUserId] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  if (!isSuperAdmin) {
-    return <div className="page-enter"><Alert type="error">Voce nao tem permissao para acessar esta area.</Alert></div>;
-  }
-
-  const empresasState = useAsync(signal => api(baseUrl, '/admin/empresas', { signal }), [baseUrl]);
-  const empresas = useMemo(() => normalizeEmpresas(empresasState.data), [empresasState.data]);
-
-  useEffect(() => {
-    if (!selectedEmpresaId && empresas[0]?.id) setSelectedEmpresaId(empresas[0].id);
-  }, [empresas, selectedEmpresaId]);
-
-  const usuariosState = useAsync(signal => {
-    if (!selectedEmpresaId) return Promise.resolve([]);
-    return api(baseUrl, `/admin/empresas/${selectedEmpresaId}/usuarios`, { signal });
-  }, [baseUrl, selectedEmpresaId]);
-  const usuarios = extractResponseList(usuariosState.data);
-
-  const saveEmpresa = async event => {
-    event.preventDefault();
-    setSaving(true);
-    try {
-      const body = { ...empresaForm, ativa: Boolean(empresaForm.ativa) };
-      if (editingEmpresa) {
-        await api(baseUrl, `/admin/empresas/${editingEmpresa.id}`, { method: 'PUT', body });
-        toast('Empresa atualizada.', 'success');
-      } else {
-        await api(baseUrl, '/admin/empresas', { method: 'POST', body });
-        toast('Empresa criada.', 'success');
-      }
-      setEmpresaForm({ nome: '', cnpj: '', ativa: true });
-      setEditingEmpresa(null);
-      empresasState.reload();
-    } catch (e) {
-      toast(e.message, 'error');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const saveUser = async event => {
-    event.preventDefault();
-    if (!selectedEmpresaId) {
-      toast('Selecione uma empresa para continuar.', 'error');
-      return;
-    }
-    setSaving(true);
-    try {
-      const body = { ...userForm, ativo: Boolean(userForm.ativo) };
-      if (editingUserId) {
-        await api(baseUrl, `/admin/empresas/${selectedEmpresaId}/usuarios/${editingUserId}`, { method: 'PUT', body });
-        toast('Vinculo atualizado.', 'success');
-      } else {
-        await api(baseUrl, `/admin/empresas/${selectedEmpresaId}/usuarios`, { method: 'POST', body });
-        toast('Usuario vinculado.', 'success');
-      }
-      setUserForm({ user_id: '', email: '', papel: 'user', ativo: true });
-      setEditingUserId('');
-      usuariosState.reload();
-    } catch (e) {
-      toast(e.message, 'error');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const editEmpresa = empresa => {
-    setEditingEmpresa(empresa);
-    setEmpresaForm({ nome: empresa.nome || '', cnpj: empresa.cnpj || empresa.cpf_cnpj || '', ativa: empresa.ativa !== false });
-  };
-
-  const editUser = user => {
-    const userId = String(user.user_id || user.id || '').trim();
-    setEditingUserId(userId);
-    setUserForm({ user_id: userId, email: user.email || '', papel: user.papel || user.role || 'user', ativo: user.ativo ?? user.active ?? true });
-  };
-
-  const removeUser = async user => {
-    const userId = String(user.user_id || user.id || '').trim();
-    if (!selectedEmpresaId || !userId) return;
-    setSaving(true);
-    try {
-      await api(baseUrl, `/admin/empresas/${selectedEmpresaId}/usuarios/${userId}`, { method: 'DELETE' });
-      toast('Vinculo removido.', 'success');
-      usuariosState.reload();
-    } catch (e) {
-      toast(e.message, 'error');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="page-enter">
-      <SectionHeader title="Admin" sub="Empresas, usuarios e URL da API em modo leitura" />
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-body">
-          <div className="field">
-            <label className="label">URL da API</label>
-            <input className="input" value={baseUrl || 'Nao configurada'} readOnly />
-            <span className="input-hint">Controlada pelo deploy via VITE_API_BASE_URL.</span>
-          </div>
-        </div>
-      </div>
-      <div className="grid-2">
-        <div className="card">
-          <div className="card-header"><span className="card-title">{editingEmpresa ? 'Editar empresa' : 'Nova empresa'}</span></div>
-          <div className="card-body">
-            <form className="form-grid" onSubmit={saveEmpresa}>
-              <div className="field">
-                <label className="label">Nome</label>
-                <input className="input" value={empresaForm.nome} onChange={e => setEmpresaForm(f => ({ ...f, nome: e.target.value }))} required />
-              </div>
-              <div className="field">
-                <label className="label">CNPJ</label>
-                <input className="input" value={empresaForm.cnpj} onChange={e => setEmpresaForm(f => ({ ...f, cnpj: e.target.value }))} />
-              </div>
-              <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input type="checkbox" checked={empresaForm.ativa} onChange={e => setEmpresaForm(f => ({ ...f, ativa: e.target.checked }))} />
-                Ativa
-              </label>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn btn-primary btn-sm" disabled={saving}>{saving ? <Spinner size={13} /> : 'Salvar'}</button>
-                {editingEmpresa && <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setEditingEmpresa(null); setEmpresaForm({ nome: '', cnpj: '', ativa: true }); }}>Cancelar</button>}
-              </div>
-            </form>
-          </div>
-        </div>
-        <div className="card">
-          <div className="card-header"><span className="card-title">Empresas</span></div>
-          <div className="card-body">
-            {empresasState.loading ? <Loading /> : empresasState.error ? <Alert type="error">{empresasState.error}</Alert> : (
-              <div className="table-wrap">
-                <table>
-                  <thead><tr><th>Nome</th><th>CNPJ</th><th>Status</th><th></th></tr></thead>
-                  <tbody>
-                    {!empresas.length ? <Empty /> : empresas.map(empresa => (
-                      <tr key={empresa.id}>
-                        <td>{empresa.nome}</td>
-                        <td>{empresa.cnpj || empresa.cpf_cnpj || '-'}</td>
-                        <td><Badge tone={empresa.ativa === false ? 'neutral' : 'success'}>{empresa.ativa === false ? 'Inativa' : 'Ativa'}</Badge></td>
-                        <td><button className="btn btn-secondary btn-sm" onClick={() => editEmpresa(empresa)}>Editar</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="card-header"><span className="card-title">Usuarios da Empresa</span></div>
-        <div className="card-body">
-          <div className="field" style={{ marginBottom: 12 }}>
-            <label className="label">Empresa</label>
-            <select className="input" value={selectedEmpresaId} onChange={e => setSelectedEmpresaId(e.target.value)}>
-              {empresas.map(empresa => <option key={empresa.id} value={empresa.id}>{empresa.nome}</option>)}
-            </select>
-          </div>
-          <form className="form-grid" onSubmit={saveUser} style={{ marginBottom: 16 }}>
-            <div className="field">
-              <label className="label">User ID</label>
-              <input className="input" value={userForm.user_id} onChange={e => setUserForm(f => ({ ...f, user_id: e.target.value }))} disabled={Boolean(editingUserId)} />
-            </div>
-            <div className="field">
-              <label className="label">Email</label>
-              <input className="input" type="email" value={userForm.email} onChange={e => setUserForm(f => ({ ...f, email: e.target.value }))} />
-            </div>
-            <div className="field">
-              <label className="label">Papel</label>
-              <select className="input" value={userForm.papel} onChange={e => setUserForm(f => ({ ...f, papel: e.target.value }))}>
-                <option value="user">user</option>
-                <option value="admin">admin</option>
-                <option value="super_admin">super_admin</option>
-              </select>
-            </div>
-            <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <input type="checkbox" checked={userForm.ativo} onChange={e => setUserForm(f => ({ ...f, ativo: e.target.checked }))} />
-              Ativo
-            </label>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button className="btn btn-primary btn-sm" disabled={saving || !selectedEmpresaId}>{saving ? <Spinner size={13} /> : 'Salvar vinculo'}</button>
-              {editingUserId && <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setEditingUserId(''); setUserForm({ user_id: '', email: '', papel: 'user', ativo: true }); }}>Cancelar</button>}
-            </div>
-          </form>
-          {usuariosState.loading ? <Loading /> : usuariosState.error ? <Alert type="error">{usuariosState.error}</Alert> : (
-            <div className="table-wrap">
-              <table>
-                <thead><tr><th>Email</th><th>Papel</th><th>Status</th><th></th></tr></thead>
-                <tbody>
-                  {!usuarios.length ? <Empty /> : usuarios.map(user => {
-                    const userId = String(user.user_id || user.id || user.email || '');
-                    return (
-                      <tr key={userId}>
-                        <td>{user.email || userId}</td>
-                        <td>{user.papel || user.role || '-'}</td>
-                        <td><Badge tone={(user.ativo ?? user.active ?? true) ? 'success' : 'neutral'}>{(user.ativo ?? user.active ?? true) ? 'Ativo' : 'Inativo'}</Badge></td>
-                        <td style={{ display: 'flex', gap: 6 }}>
-                          <button className="btn btn-secondary btn-sm" onClick={() => editUser(user)}>Editar</button>
-                          <button className="btn btn-danger btn-sm" onClick={() => removeUser(user)} disabled={saving}>Remover</button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function App() {
   const [active, setActive] = useState('dashboard');
   const [renderedActive, setRenderedActive] = useState('dashboard');
@@ -5922,103 +5475,10 @@ function App() {
   const [grupoAtual, setGrupoAtual] = useState(readCurrentGroup);
   const [baseUrl] = useState(resolveApiBaseUrl);
   const [apiStatus, setApiStatus] = useState('idle');
-  const [session, setSession] = useState(null);
-  const [currentUser, setCurrentUser] = useState(null);
-  const [minhasEmpresas, setMinhasEmpresas] = useState([]);
-  const [selectedEmpresaId, setSelectedEmpresaId] = useState(() => localStorage.getItem(EMPRESA_ID_STORAGE_KEY) || '');
-  const [isLoadingAuth, setIsLoadingAuth] = useState(true);
-  const [isLoadingEmpresas, setIsLoadingEmpresas] = useState(false);
-  const [authError, setAuthError] = useState('');
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopSidebarVisible, setDesktopSidebarVisible] = useState(true);
   const { toasts, toast } = useToast();
   const grupos = useMemo(() => [LOCAL_GROUP], []);
-  const selectedEmpresa = useMemo(
-    () => minhasEmpresas.find(empresa => empresa.id === selectedEmpresaId) || null,
-    [minhasEmpresas, selectedEmpresaId],
-  );
-  const isSuperAdmin = useMemo(() => isUserSuperAdmin(currentUser), [currentUser]);
-
-  const logout = useCallback(async () => {
-    clearApiCache();
-    localStorage.removeItem(EMPRESA_ID_STORAGE_KEY);
-    setSession(null);
-    setCurrentUser(null);
-    setMinhasEmpresas([]);
-    setSelectedEmpresaId('');
-    setActive('dashboard');
-    setRenderedActive('dashboard');
-    if (supabase) await supabase.auth.signOut().catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    const token = session?.access_token || '';
-    setApiAuthContext({ accessToken: token, selectedEmpresaId, onUnauthorized: logout });
-  }, [session?.access_token, selectedEmpresaId, logout]);
-
-  useEffect(() => {
-    if (!supabase) {
-      setIsLoadingAuth(false);
-      return undefined;
-    }
-    let mounted = true;
-    supabase.auth.getSession().then(({ data }) => {
-      if (!mounted) return;
-      setSession(prev => data?.session || prev || null);
-      setIsLoadingAuth(false);
-    });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession || null);
-      setIsLoadingAuth(false);
-      if (!nextSession) {
-        clearApiCache();
-        setCurrentUser(null);
-        setMinhasEmpresas([]);
-        setSelectedEmpresaId('');
-      }
-    });
-    return () => {
-      mounted = false;
-      listener?.subscription?.unsubscribe?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!session?.access_token || !baseUrl) {
-      setCurrentUser(null);
-      setMinhasEmpresas([]);
-      setIsLoadingEmpresas(false);
-      return;
-    }
-    let alive = true;
-    const loadContext = async () => {
-      setIsLoadingEmpresas(true);
-      setAuthError('');
-      try {
-        const [me, empresasPayload] = await Promise.all([
-          api(baseUrl, '/me', { cache: 'no-store' }),
-          api(baseUrl, '/minhas-empresas', { cache: 'no-store' }),
-        ]);
-        if (!alive) return;
-        const empresas = normalizeEmpresas(empresasPayload);
-        const stored = localStorage.getItem(EMPRESA_ID_STORAGE_KEY) || '';
-        const validStored = empresas.some(empresa => empresa.id === stored);
-        const nextEmpresaId = validStored ? stored : (empresas.length === 1 ? empresas[0].id : '');
-        setCurrentUser({ ...(me || {}), email: me?.email || session?.user?.email || '' });
-        setMinhasEmpresas(empresas);
-        setSelectedEmpresaId(nextEmpresaId);
-        if (nextEmpresaId) localStorage.setItem(EMPRESA_ID_STORAGE_KEY, nextEmpresaId);
-        else localStorage.removeItem(EMPRESA_ID_STORAGE_KEY);
-      } catch (e) {
-        if (!alive) return;
-        setAuthError(e.message || 'Nao foi possivel carregar seu contexto de acesso.');
-      } finally {
-        if (alive) setIsLoadingEmpresas(false);
-      }
-    };
-    loadContext();
-    return () => { alive = false; };
-  }, [baseUrl, session?.access_token]);
 
   const selecionarGrupo = groupKey => {
     const next = LOCAL_GROUP.id;
@@ -6045,18 +5505,6 @@ function App() {
     setGrupoAtual(LOCAL_GROUP.id);
   };
 
-  const trocarEmpresa = nextEmpresaId => {
-    clearApiCache();
-    const next = String(nextEmpresaId || '').trim();
-    setSelectedEmpresaId(next);
-    if (next) localStorage.setItem(EMPRESA_ID_STORAGE_KEY, next);
-    else localStorage.removeItem(EMPRESA_ID_STORAGE_KEY);
-    setActive('dashboard');
-    setRenderedActive('dashboard');
-    setMobileOpen(false);
-    setApiStatus('idle');
-  };
-
   useEffect(() => {
     if (grupoAtual === LOCAL_GROUP.id) return;
     setGrupoAtual(LOCAL_GROUP.id);
@@ -6069,10 +5517,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!baseUrl) {
-      setApiStatus('err');
-      return;
-    }
     const check = async () => {
       try { await api(baseUrl, '/health'); setApiStatus('ok'); }
       catch { setApiStatus('err'); }
@@ -6101,12 +5545,10 @@ function App() {
   }, [active, renderedActive]);
 
   const warmDefaultQueue = useCallback(() => {
-    if (!baseUrl) return;
     prefetchDefaultQueue(baseUrl, grupos, grupoAtual);
   }, [baseUrl, grupos, grupoAtual]);
 
   useEffect(() => {
-    if (!baseUrl) return undefined;
     const warm = () => warmDefaultQueue();
     if ('requestIdleCallback' in window) {
       const id = window.requestIdleCallback(warm, { timeout: 2500 });
@@ -6114,7 +5556,7 @@ function App() {
     }
     const id = setTimeout(warm, 900);
     return () => clearTimeout(id);
-  }, [baseUrl, warmDefaultQueue]);
+  }, [warmDefaultQueue]);
 
   const navigate = useCallback(k => {
     if (k === 'fila_trabalho' || k === 'fila_trabalho_b') warmDefaultQueue();
@@ -6123,7 +5565,6 @@ function App() {
   }, [warmDefaultQueue]);
 
   const isQueuePageActive = active === 'fila_trabalho' || active === 'fila_trabalho_b';
-
   const sections = [...new Set(MENU.map(m => m.section))];
 
   const SidebarContent = () => (
@@ -6161,30 +5602,16 @@ function App() {
       ))}
 
       <div className="sidebar-footer">
-        <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-3)' }}>{selectedEmpresa?.nome || 'Sem empresa ativa'}</div>
-          {isSuperAdmin && (
-            <button className={cn('btn btn-secondary btn-sm', active === 'admin' && 'btn-primary')} onClick={() => navigate('admin')}>
-              Admin
-            </button>
-          )}
-        </div>
         <div className="api-status">
           <div className={cn('status-dot', apiStatus)} />
-          <span>{!baseUrl ? 'API não configurada' : apiStatus === 'ok' ? 'API conectada' : apiStatus === 'err' ? 'API offline' : 'Verificando...'}</span>
+          <span>{apiStatus === 'ok' ? 'API conectada' : apiStatus === 'err' ? 'API offline' : 'Verificando...'}</span>
         </div>
       </div>
     </>
   );
 
   const renderPage = () => {
-    const pageProps = { baseUrl, toast, grupoAtual, grupos, selectedEmpresa, selectedEmpresaId };
-    if (renderedActive === 'admin') {
-      return <AdminPage baseUrl={baseUrl} toast={toast} isSuperAdmin={isSuperAdmin} />;
-    }
-    if (!selectedEmpresaId) {
-      return <SemEmpresaPage isSuperAdmin={isSuperAdmin} navigate={navigate} currentUser={currentUser} logout={logout} />;
-    }
+    const pageProps = { baseUrl, toast, grupoAtual, grupos };
     switch (renderedActive) {
       case 'dashboard':
         return <DashboardPage {...pageProps} navigate={navigate} />;
@@ -6211,37 +5638,16 @@ function App() {
     }
   };
 
-  const currentMenu = active === 'admin' ? { label: 'Admin' } : MENU.find(m => m.key === active);
-
-  const showApiMissing = !baseUrl;
-
-  if (isLoadingAuth) {
-    return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}><Loading label="Carregando sessao..." /></div>;
-  }
-
-  if (!session) {
-    return (
-      <>
-        <LoginPage baseUrl={baseUrl} toast={toast} onAuthenticated={setSession} />
-        <ToastContainer toasts={toasts} />
-      </>
-    );
-  }
-
-  if (isLoadingEmpresas) {
-    return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}><Loading label="Carregando contexto..." /></div>;
-  }
+  const currentMenu = MENU.find(m => m.key === active);
 
   return (
     <div className={cn('app-shell', isQueuePageActive && 'focus-mode', isQueuePageActive && !desktopSidebarVisible && 'sidebar-hidden')}>
-      {/* Desktop sidebar */}
       {desktopSidebarVisible && (
         <aside className="sidebar">
           <SidebarContent />
         </aside>
       )}
 
-      {/* Mobile overlay */}
       {mobileOpen && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 200, display: 'flex' }}>
           <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(4px)' }}
@@ -6253,7 +5659,6 @@ function App() {
       )}
 
       <div className="main">
-        {/* Mobile topbar */}
         <div className="mobile-topbar">
           <button className="hamburger" onClick={() => setMobileOpen(true)}>
             <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
@@ -6264,24 +5669,11 @@ function App() {
           <div className={cn('status-dot', apiStatus)} />
         </div>
 
-        {/* Desktop topbar */}
         <div className="topbar">
           <span className="topbar-title">Portal NFS-e</span>
           <span className="topbar-sep">/</span>
           <span className="topbar-sub">{currentMenu?.label || 'Auditoria Fiscal'}</span>
           <div className="topbar-actions">
-            {minhasEmpresas.length > 1 ? (
-              <select className="input" style={{ height: 34, minWidth: 220 }} value={selectedEmpresaId} onChange={e => trocarEmpresa(e.target.value)}>
-                <option value="">Selecione uma empresa</option>
-                {minhasEmpresas.map(empresa => <option key={empresa.id} value={empresa.id}>{empresa.nome}</option>)}
-              </select>
-            ) : (
-              <span style={{ fontSize: 12, color: 'var(--text-2)' }}>Empresa: {selectedEmpresa?.nome || 'nenhuma'}</span>
-            )}
-            {isSuperAdmin && (
-              <button className="btn btn-secondary btn-sm" onClick={() => navigate('admin')}>Admin</button>
-            )}
-            <button className="btn btn-secondary btn-sm" onClick={logout}>Sair</button>
             <div className="api-status" style={{ background: 'transparent', border: 'none', padding: '4px 8px' }}>
               <div className={cn('status-dot', apiStatus)} />
               <span style={{ fontSize: 11 }}>{apiStatus === 'ok' ? 'API conectada' : apiStatus === 'err' ? 'API offline' : 'Verificando API'}</span>
@@ -6289,23 +5681,8 @@ function App() {
           </div>
         </div>
 
-        <div className="page-content" key={selectedEmpresaId || 'sem-empresa'}>
-          {authError ? (
-            <div className="card" style={{ maxWidth: 760 }}>
-              <div className="card-body">
-                <Alert type="error">{authError}</Alert>
-                <div style={{ marginTop: 12 }}>
-                  <button className="btn btn-secondary btn-sm" onClick={logout}>Sair</button>
-                </div>
-              </div>
-            </div>
-          ) : showApiMissing ? (
-            <div className="card" style={{ maxWidth: 760 }}>
-              <div className="card-body">
-                <Alert type="error">VITE_API_BASE_URL nao configurada. Ajuste o .env/deploy para continuar.</Alert>
-              </div>
-            </div>
-          ) : (routePending ? <PageFallback /> : renderPage())}
+        <div className="page-content">
+          {routePending ? <PageFallback /> : renderPage()}
         </div>
       </div>
 
@@ -6313,7 +5690,6 @@ function App() {
     </div>
   );
 }
-
 ReactDOM.createRoot(document.getElementById('root')).render(
   <PortalErrorBoundary>
     <App />
