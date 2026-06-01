@@ -158,6 +158,17 @@ async function apiWithGroup(baseUrl, path, groups, groupId, opts = {}) {
   return api(baseUrl, path, opts);
 }
 
+function canRepeatProcessStatus(status) {
+  return normalizeProcessStatus(status) === 'failed';
+}
+
+async function repeatProcessRequest(baseUrl, processId, grupos, grupoAtual) {
+  return apiWithGroup(baseUrl, `/processos/${processId}/repetir`, grupos, grupoAtual, {
+    method: 'POST',
+    cache: 'no-store',
+  });
+}
+
 function devLog(label, details = {}) {
   if (IS_DEV) console.info(`[nfse-debug] ${label}`, details);
 }
@@ -1890,7 +1901,6 @@ function DashboardProcessesTable({ items, repeatLoadingId, onRepeat, showActions
         <tbody>
           {items.length === 0 ? <Empty msg="Nenhum processo" /> :
             items.map(r => {
-              const status = normalizeProcessStatus(r.status);
               const processId = String(r.id || '');
               const isRepeating = repeatLoadingId === processId;
               return (
@@ -1908,7 +1918,7 @@ function DashboardProcessesTable({ items, repeatLoadingId, onRepeat, showActions
                   </td>
                   {showActions && (
                     <td className="actions">
-                      {status === 'failed' ? (
+                      {canRepeatProcessStatus(r.status) ? (
                         <button className="btn btn-danger btn-xs" disabled={isRepeating} onClick={() => onRepeat(r.id)}>
                           {isRepeating ? <Spinner size={12} /> : null}
                           Repetir
@@ -2004,11 +2014,28 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
     setRepeatLoadingId(id);
     setRepeatError('');
     setRepeatSuccess('');
-    const unavailableMessage = 'Repetir processo nao esta disponivel no Backend_Auditoria.';
-    setRepeatError(unavailableMessage);
-    toast(unavailableMessage, 'error');
-    setRepeatLoadingId('');
-    return;
+    try {
+      const data = await repeatProcessRequest(baseUrl, id, grupos, grupoAtual);
+      if (data?.success === false) {
+        const message = data?.message || data?.detail || data?.error || 'Nao foi possivel repetir o processo.';
+        setRepeatError(message);
+        toast(message, 'error');
+        return;
+      }
+      const message = data?.message || 'Processo reenfileirado com sucesso.';
+      setRepeatSuccess(message);
+      toast(message, 'success');
+      await Promise.allSettled([
+        refreshDashboard(),
+        procModalOpen ? fullProcs.reload() : Promise.resolve(),
+      ]);
+    } catch (e) {
+      const message = e?.message || 'Nao foi possivel repetir o processo.';
+      setRepeatError(message);
+      toast(message, 'error');
+    } finally {
+      setRepeatLoadingId('');
+    }
   };
 
   const statCards = [
@@ -2218,7 +2245,7 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
                             <div className="dashboard-cell-subtitle">Notas vinculadas</div>
                           </td>
                           <td className="actions">
-                            {normalizeProcessStatus(r.status) === 'failed' ? (
+                            {canRepeatProcessStatus(r.status) ? (
                               <button className="btn btn-danger btn-xs" disabled={repeatLoadingId === String(r.id || '')} onClick={() => repeatProcess(r.id)}>
                                 {repeatLoadingId === String(r.id || '') ? <Spinner size={12} /> : null}
                                 Repetir
