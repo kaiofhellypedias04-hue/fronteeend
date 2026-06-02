@@ -1968,3 +1968,132 @@ tbody td.actions { white-space: nowrap; }
     width: 100vw;
   }
 }
+
+.auth-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.auth-card {
+  width: min(440px, 100%);
+  display: grid;
+  gap: 16px;
+  padding: 28px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lg);
+}
+
+.auth-card-wide {
+  width: min(620px, 100%);
+}
+
+.auth-card h1 {
+  margin: 4px 0 6px;
+  font-size: 28px;
+  color: var(--text);
+}
+
+.auth-card p {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.auth-card label,
+.form-card label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-2);
+}
+
+.auth-kicker {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.auth-alert {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  font-size: 13px;
+}
+
+.auth-alert.danger {
+  border-color: color-mix(in srgb, var(--red) 45%, var(--border));
+  color: var(--red);
+}
+
+.auth-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.user-chip {
+  min-width: 180px;
+  text-align: right;
+}
+
+.user-chip-name {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.user-chip-meta {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.toolbar-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+  max-width: 420px;
+}
+
+.table-card {
+  overflow: auto;
+}
+
+.form-card {
+  display: grid;
+  gap: 14px;
+  max-width: 720px;
+  padding: 18px;
+}
+
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.check-row {
+  display: flex !important;
+  grid-template-columns: auto 1fr !important;
+  align-items: center;
+}
+
+@media (max-width: 720px) {
+  .auth-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .user-chip {
+    display: none;
+  }
+}

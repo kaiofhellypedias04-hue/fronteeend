@@ -10,9 +10,9 @@ import '../utils/date.js';
 import '../utils/status.js';
 import '../utils/queue.js';
 import '../assets/styles.css';
+import { API_BASE_URL, apiFetch, apiFetchBlob, apiRequest, buildApiUrl as buildApiClientUrl, normalizeBaseUrl as normalizeApiClientBaseUrl } from './lib/apiClient.js';
 
 const ReactDOM = { createPortal, createRoot };
-const VITE_API_BASE_URL = import.meta.env?.VITE_API_BASE_URL || '';
 const IS_DEV = Boolean(import.meta.env.DEV);
 const { RELATORIO_COLUNAS } = window.NFSEConstants;
 const { cn, fmtMoney: fmtMoneyRaw, toCSV } = window.NFSEFormat;
@@ -60,36 +60,12 @@ const GROUP_LABEL_STORAGE_KEY = 'grupo_nome_atual';
 const GROUP_SLUG_STORAGE_KEY = 'grupo_slug_atual';
 const LOCAL_GROUP = { id: 'geral', label: 'Geral', slug: 'geral', certCount: null };
 
-const DEFAULT_API_BASE_URL = normalizeBaseUrl(VITE_API_BASE_URL);
-
-const DEFAULT_API_URL = resolveDefaultApiUrl();
-
-function readViteApiBaseUrl() {
-  return VITE_API_BASE_URL;
-}
-
-function resolveDefaultApiUrl() {
-  const viteUrl = normalizeBaseUrl(readViteApiBaseUrl());
-  if (viteUrl) return viteUrl;
-  return 'http://localhost:8000';
-}
-
-
 function normalizeBaseUrl(url) {
-  const raw = String(url || '').trim();
-  if (!raw) return '';
-  if (raw.startsWith('/')) return raw.replace(/\/+$/, '') || '';
-  try {
-    const u = new URL(raw);
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
-    return raw.replace(/\/+$/, '');
-  } catch {
-    return '';
-  }
+  return normalizeApiClientBaseUrl(url);
 }
 
 function resolveApiBaseUrl() {
-  return DEFAULT_API_URL;
+  return API_BASE_URL;
 }
 
 function normalizeApiPath(path) {
@@ -99,10 +75,7 @@ function normalizeApiPath(path) {
 }
 
 function buildApiUrl(baseUrl, path) {
-  const base = normalizeBaseUrl(baseUrl);
-  const endpoint = normalizeApiPath(path);
-  if (!base) return endpoint;
-  return `${base}${endpoint}`;
+  return buildApiClientUrl(path);
 }
 
 function apiDebugLog(event, payload = {}) {
@@ -745,25 +718,12 @@ async function api(baseUrl, path, opts = {}) {
       cache: isCacheable ? 'default' : 'no-store',
     });
     try {
-      const res = await fetch(requestUrl, req);
-      apiDebugLog('response status', {
-        baseUrl: normalizeBaseUrl(baseUrl),
-        endpoint,
-        url: requestUrl,
-        status: res.status,
-        ok: res.ok,
-      });
-      const txt = await res.text();
-      let data;
-      try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
-      if (!res.ok) {
-        throw new ApiError(parseApiErrorMessage(res.status, data, txt), { status: res.status, data });
-      }
+      const data = await apiRequest(endpoint, req);
       const responseItems = extractResponseList(data);
       apiDebugLog('response parsed', {
         endpoint,
         url: requestUrl,
-        status: res.status,
+        status: 200,
         items: responseItems.length,
         total: extractResponseTotal(data, responseItems.length),
       });
@@ -802,12 +762,9 @@ async function fetchProcessFileBlob(baseUrl, processId, arquivoId, grupos = [], 
   const url = buildApiUrl(baseUrl, endpoint);
   apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url, method: 'GET' });
   try {
-    const res = await fetch(url);
-    apiDebugLog('download response status', { endpoint, url, status: res.status, ok: res.ok });
-    if (!res.ok) {
-      throw new ApiError(parseApiErrorMessage(res.status, null), { status: res.status });
-    }
-    return res.blob();
+    const blob = await apiFetchBlob(endpoint);
+    apiDebugLog('download response status', { endpoint, url, status: 200, ok: true });
+    return blob;
   } catch (e) {
     apiDebugError('download failed', {
       baseUrl: normalizeBaseUrl(baseUrl),
@@ -823,15 +780,9 @@ async function fetchProtectedBlob(baseUrl, path) {
   const endpoint = normalizeApiPath(path);
   const url = buildApiUrl(baseUrl, endpoint);
   apiDebugLog('download request', { baseUrl: normalizeBaseUrl(baseUrl), endpoint, url, method: 'GET' });
-  const res = await fetch(url);
-  apiDebugLog('download response status', { endpoint, url, status: res.status, ok: res.ok });
-  if (!res.ok) {
-    let data = null;
-    const txt = await res.text().catch(() => '');
-    try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
-    throw new ApiError(parseApiErrorMessage(res.status, data, txt), { status: res.status, data });
-  }
-  return res.blob();
+  const blob = await apiFetchBlob(endpoint);
+  apiDebugLog('download response status', { endpoint, url, status: 200, ok: true });
+  return blob;
 }
 
 function downloadBrowserBlob(blob, filename) {
@@ -839,8 +790,25 @@ function downloadBrowserBlob(blob, filename) {
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  document.body.appendChild(a);
   a.click();
+  a.remove();
   URL.revokeObjectURL(url);
+}
+
+function filenameFromContentDisposition(header) {
+  const value = String(header || '').trim();
+  if (!value) return '';
+
+  const encoded = value.match(/filename\*\s*=\s*(?:UTF-8''|utf-8'')?([^;]+)/i)?.[1];
+  const raw = encoded || value.match(/filename\s*=\s*("([^"]+)"|[^;]+)/i)?.[2] || value.match(/filename\s*=\s*([^;]+)/i)?.[1] || '';
+  if (!raw) return '';
+
+  try {
+    return decodeURIComponent(raw.trim().replace(/^["']|["']$/g, '')).replace(/[\\/]/g, '_');
+  } catch {
+    return raw.trim().replace(/^["']|["']$/g, '').replace(/[\\/]/g, '_');
+  }
 }
 
 function openUrlInNewTab(url) {
@@ -1937,6 +1905,7 @@ function DashboardProcessesTable({ items, repeatLoadingId, onRepeat, showActions
 
 // ── Page: Dashboard ──────────────────────────────────────────
 function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
+  const canOperate = true;
   const health  = useAsync(signal => api(baseUrl, '/health', { signal }), [baseUrl]);
   const execs   = useAsync(signal => apiWithGroup(baseUrl, '/execucoes?page=1&page_size=6', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
   const procs   = useAsync(signal => apiWithGroup(baseUrl, '/processos?page=1&page_size=6', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
@@ -2137,9 +2106,11 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
             <div className="dashboard-system-sub">Resumo operacional com sinais confiaveis da leitura atual.</div>
           </div>
           <div className="dashboard-quick-actions">
-            <button className="btn btn-primary btn-sm dashboard-quick-action" onClick={() => navigate('execucao')}>
-              <IconPlus /> Nova execucao
-            </button>
+            {canOperate ? (
+              <button className="btn btn-primary btn-sm dashboard-quick-action" onClick={() => navigate('execucao')}>
+                <IconPlus /> Nova execucao
+              </button>
+            ) : null}
             <button className="btn btn-ghost btn-sm dashboard-quick-action" onClick={() => navigate('fila_trabalho')}>
               <IconFolder /> Ver fila
             </button>
@@ -2227,7 +2198,7 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
               <div className="table-wrap dashboard-table-wrap" style={{ border: 'none', borderRadius: 0 }}>
                 <table>
                   <thead><tr>
-                    <th>Processo</th><th>Tipo</th><th>Status</th><th>Notas</th><th></th>
+                    <th>Processo</th><th>Tipo</th><th>Status</th><th>Notas</th>{canOperate && <th></th>}
                   </tr></thead>
                   <tbody>
                     {recentProcesses.length === 0 ? <Empty msg="Nenhum processo" /> :
@@ -2244,14 +2215,16 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
                             <div className="dashboard-cell-title">{r.total_notas ?? 0}</div>
                             <div className="dashboard-cell-subtitle">Notas vinculadas</div>
                           </td>
-                          <td className="actions">
+                          {canOperate && (
+                            <td className="actions">
                             {canRepeatProcessStatus(r.status) ? (
                               <button className="btn btn-danger btn-xs" disabled={repeatLoadingId === String(r.id || '')} onClick={() => repeatProcess(r.id)}>
                                 {repeatLoadingId === String(r.id || '') ? <Spinner size={12} /> : null}
                                 Repetir
                               </button>
                             ) : null}
-                          </td>
+                            </td>
+                          )}
                         </tr>
                       ))}
                   </tbody>
@@ -2302,7 +2275,7 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
               items={fullProcItems}
               repeatLoadingId={repeatLoadingId}
               onRepeat={repeatProcess}
-              showActions
+              showActions={canOperate}
             />
             <Pagination
               page={procModalPage}
@@ -3210,7 +3183,20 @@ function canDeleteProcess(status) {
 }
 
 function ProcessActions({ process, busy, onCancel, onDelete, compact = false }) {
-  return null;
+  return (
+    <>
+      {canCancelProcess(process?.status) && (
+        <button className="btn btn-ghost btn-xs" disabled={busy} onClick={() => onCancel(process)}>
+          {busy ? <Spinner size={12} /> : <><IconStop /> {compact ? 'Cancelar' : 'Cancelar'}</>}
+        </button>
+      )}
+      {canDeleteProcess(process?.status) && (
+        <button className="btn btn-ghost btn-xs danger" disabled={busy} onClick={() => onDelete(process)}>
+          <IconTrash /> {compact ? 'Excluir' : 'Excluir'}
+        </button>
+      )}
+    </>
+  );
 }
 
 function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
@@ -3332,7 +3318,15 @@ function ProcessosPage({ baseUrl, toast, grupoAtual, grupos }) {
     const { process } = confirmAction;
     setActionLoadingId(process.id);
     try {
-      toast('Cancelar ou excluir processos nao esta disponivel no Backend_Auditoria.', 'error');
+      if (confirmAction.type === 'cancel') {
+        await apiWithGroup(baseUrl, `/processos/${process.id}/cancel`, grupos, grupoAtual, { method: 'POST' });
+        toast('Processo cancelado.', 'success');
+        await reloadProcessViews(process.id);
+      } else if (confirmAction.type === 'delete') {
+        await apiWithGroup(baseUrl, `/processos/${process.id}`, grupos, grupoAtual, { method: 'DELETE' });
+        toast('Processo excluido.', 'success');
+        await reloadProcessViews(process.id, { closeOnMissing: true });
+      }
     } catch (e) {
       toast(e.message, 'error');
     } finally {
@@ -4047,6 +4041,45 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
     }
   };
 
+  const handleExportarDetalhadoXlsx = async () => {
+    setExportingDetailed(true);
+    try {
+      if (queueDateRangeError) throw new Error(queueDateRangeError);
+
+      const q = buildQueueSearchParams({
+        filters,
+        smartSearch,
+        includePagination: false,
+      });
+      q.set('formato', 'xlsx');
+
+      const endpoint = appendGroupParam(`/nfse/exportar-fila-detalhada?${q.toString()}`, grupos, grupoAtual);
+      const response = await apiFetch(endpoint, {
+        method: 'GET',
+        cache: 'no-store',
+        timeoutMs: 60000,
+      });
+
+      if (!response.ok) {
+        throw new Error('Falha ao exportar planilha');
+      }
+
+      const blob = await response.blob();
+      const filename = filenameFromContentDisposition(response.headers.get('Content-Disposition'))
+        || `fila_detalhada_${today()}.xlsx`;
+      downloadBrowserBlob(blob, filename);
+      toast('Planilha Excel da fila detalhada baixada.', 'success');
+    } catch (e) {
+      apiDebugError('download failed', {
+        endpoint: '/nfse/exportar-fila-detalhada',
+        error: serializeApiError(e),
+      });
+      toast(e.message, 'error');
+    } finally {
+      setExportingDetailed(false);
+    }
+  };
+
   return (
     <div className={cn('page-enter', isVariantB && 'queue-page-b', !sidebarVisible && !filtersOpen && 'queue-page-wide')}>
       <SectionHeader
@@ -4100,9 +4133,9 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
             <button
               className="btn btn-ghost btn-sm"
               disabled={exportingDetailed || !visibleItems.length}
-              onClick={handleExportarDetalhado}
+              onClick={handleExportarDetalhadoXlsx}
             >
-              {exportingDetailed ? <Spinner size={12} /> : <IconDown />} Exportar detalhado
+              {exportingDetailed ? <Spinner size={12} /> : <IconDown />} Exportar Excel
             </button>
             <button className="btn btn-ghost btn-sm" onClick={refreshQueue}>
               <IconRefresh /> Atualizar
@@ -5495,9 +5528,17 @@ function CredenciaisPage({ baseUrl, toast, grupoAtual, grupos }) {
   );
 }
 
+function activeFromPath(pathname = window.location.pathname) {
+  return 'dashboard';
+}
+
+function pathFromActive(key, params = {}) {
+  return '/';
+}
+
 function App() {
-  const [active, setActive] = useState('dashboard');
-  const [renderedActive, setRenderedActive] = useState('dashboard');
+  const [active, setActive] = useState(() => activeFromPath());
+  const [renderedActive, setRenderedActive] = useState(() => activeFromPath());
   const [routePending, setRoutePending] = useState(false);
   const [grupoAtual, setGrupoAtual] = useState(readCurrentGroup);
   const [baseUrl] = useState(resolveApiBaseUrl);
@@ -5505,7 +5546,12 @@ function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [desktopSidebarVisible, setDesktopSidebarVisible] = useState(true);
   const { toasts, toast } = useToast();
-  const grupos = useMemo(() => [LOCAL_GROUP], []);
+  const grupos = useMemo(() => [{
+    ...LOCAL_GROUP,
+    label: 'Geral',
+    slug: 'geral',
+  }], []);
+  const visibleMenu = MENU;
 
   const selecionarGrupo = groupKey => {
     const next = LOCAL_GROUP.id;
@@ -5531,6 +5577,21 @@ function App() {
     setApiStatus('idle');
     setGrupoAtual(LOCAL_GROUP.id);
   };
+
+  useEffect(() => {
+    const syncRoute = () => {
+      const next = activeFromPath();
+      setActive(next);
+    };
+    window.addEventListener('popstate', syncRoute);
+    return () => window.removeEventListener('popstate', syncRoute);
+  }, []);
+
+  useEffect(() => {
+    const onForbidden = () => toast('Sem permissao para executar esta acao.', 'error');
+    window.addEventListener('nfse:forbidden', onForbidden);
+    return () => window.removeEventListener('nfse:forbidden', onForbidden);
+  }, [toast]);
 
   useEffect(() => {
     if (grupoAtual === LOCAL_GROUP.id) return;
@@ -5585,14 +5646,16 @@ function App() {
     return () => clearTimeout(id);
   }, [warmDefaultQueue]);
 
-  const navigate = useCallback(k => {
+  const navigate = useCallback((k, params = {}) => {
     if (k === 'fila_trabalho' || k === 'fila_trabalho_b') warmDefaultQueue();
     setMobileOpen(false);
+    const nextPath = pathFromActive(k, params);
+    if (window.location.pathname !== nextPath) window.history.pushState({}, '', nextPath);
     React.startTransition(() => setActive(k));
   }, [warmDefaultQueue]);
 
   const isQueuePageActive = active === 'fila_trabalho' || active === 'fila_trabalho_b';
-  const sections = [...new Set(MENU.map(m => m.section))];
+  const sections = [...new Set(visibleMenu.map(m => m.section))];
 
   const SidebarContent = () => (
     <>
@@ -5612,7 +5675,7 @@ function App() {
       {sections.map(sec => (
         <div key={sec} className="sidebar-section">
           <div className="sidebar-section-label">{sec}</div>
-          {MENU.filter(m => m.section === sec).map(item => (
+          {visibleMenu.filter(m => m.section === sec).map(item => (
             <button key={item.key} className={cn('nav-item', active === item.key && 'active')}
               onMouseEnter={() => {
                 if (item.key === 'fila_trabalho' || item.key === 'fila_trabalho_b') warmDefaultQueue();
@@ -5665,7 +5728,7 @@ function App() {
     }
   };
 
-  const currentMenu = MENU.find(m => m.key === active);
+  const currentMenu = visibleMenu.find(m => m.key === active);
 
   return (
     <div className={cn('app-shell', isQueuePageActive && 'focus-mode', isQueuePageActive && !desktopSidebarVisible && 'sidebar-hidden')}>
