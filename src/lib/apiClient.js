@@ -1,6 +1,9 @@
-export const API_BASE_URL = normalizeBaseUrl(
-  import.meta.env.VITE_API_BASE_URL || ''
-);
+const CANONICAL_API_BASE_URL = 'https://backeeend-production.up.railway.app';
+const DEPRECATED_API_BASE_URLS = new Set([
+  'https://web-production-350ea9.up.railway.app',
+]);
+
+export const API_BASE_URL = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 
 let forbiddenHandler = null;
 
@@ -19,6 +22,14 @@ export function normalizeBaseUrl(url) {
   } catch {
     return '';
   }
+}
+
+function resolveApiBaseUrl(configuredUrl) {
+  const normalized = normalizeBaseUrl(configuredUrl);
+  if (!normalized || DEPRECATED_API_BASE_URLS.has(normalized)) {
+    return CANONICAL_API_BASE_URL;
+  }
+  return normalized;
 }
 
 export function normalizeApiPath(path) {
