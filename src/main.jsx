@@ -811,6 +811,18 @@ function filenameFromContentDisposition(header) {
   }
 }
 
+async function errorMessageFromResponse(response, fallback = 'Falha ao exportar planilha') {
+  const text = await response.text().catch(() => '');
+  if (!text.trim()) return fallback;
+
+  try {
+    const data = JSON.parse(text);
+    return data?.detail || data?.message || data?.error || fallback;
+  } catch {
+    return text.trim() || fallback;
+  }
+}
+
 function openUrlInNewTab(url) {
   const a = document.createElement('a');
   a.href = url;
@@ -4054,14 +4066,24 @@ function FilaDeTrabalhoPage({ baseUrl, toast, navigate, grupoAtual, grupos, vari
       q.set('formato', 'xlsx');
 
       const endpoint = appendGroupParam(`/nfse/exportar-fila-detalhada?${q.toString()}`, grupos, grupoAtual);
-      const response = await apiFetch(endpoint, {
+      const fallbackEndpoint = appendGroupParam(`/nfse/exportar-fila-detalhada-xlsx?${q.toString()}`, grupos, grupoAtual);
+      let response = await apiFetch(endpoint, {
         method: 'GET',
         cache: 'no-store',
         timeoutMs: 60000,
       });
 
       if (!response.ok) {
-        throw new Error('Falha ao exportar planilha');
+        const firstError = await errorMessageFromResponse(response);
+        response = await apiFetch(fallbackEndpoint, {
+          method: 'GET',
+          cache: 'no-store',
+          timeoutMs: 60000,
+        });
+        if (!response.ok) {
+          const fallbackError = await errorMessageFromResponse(response, firstError);
+          throw new Error(fallbackError || firstError || 'Falha ao exportar planilha');
+        }
       }
 
       const blob = await response.blob();
