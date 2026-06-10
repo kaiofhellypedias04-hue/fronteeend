@@ -757,6 +757,42 @@ function prefetchApi(baseUrl, path, opts = {}) {
   return api(baseUrl, path, { ...opts, cacheTtl: opts.cacheTtl ?? 120_000 }).catch(() => null);
 }
 
+async function checkApiHealth(baseUrl, opts = {}) {
+  const timeoutMs = Number.isFinite(Number(opts.timeoutMs)) ? Number(opts.timeoutMs) : 8000;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const endpoint = '/health';
+  const url = buildApiUrl(baseUrl, endpoint);
+  let abortListener = null;
+
+  try {
+    if (opts.signal) {
+      if (opts.signal.aborted) controller.abort();
+      abortListener = () => controller.abort();
+      opts.signal.addEventListener('abort', abortListener, { once: true });
+    }
+    const res = await fetch(url, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (!res.ok) return false;
+
+    const text = await res.text();
+    if (!text) return true;
+
+    try {
+      const data = JSON.parse(text);
+      return data?.status ? String(data.status).toLowerCase() === 'ok' : true;
+    } catch {
+      return true;
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    if (opts.signal && abortListener) opts.signal.removeEventListener('abort', abortListener);
+  }
+}
+
 async function fetchProcessFileBlob(baseUrl, processId, arquivoId, grupos = [], grupoAtual = '') {
   const endpoint = appendGroupParam(`/processos/${processId}/arquivos/${arquivoId}/download`, grupos, grupoAtual);
   const url = buildApiUrl(baseUrl, endpoint);
@@ -1918,7 +1954,10 @@ function DashboardProcessesTable({ items, repeatLoadingId, onRepeat, showActions
 // ── Page: Dashboard ──────────────────────────────────────────
 function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
   const canOperate = true;
-  const health  = useAsync(signal => api(baseUrl, '/health', { signal }), [baseUrl]);
+  const health  = useAsync(async signal => {
+    const isOnline = await checkApiHealth(baseUrl, { signal });
+    return { status: isOnline ? 'ok' : 'offline' };
+  }, [baseUrl]);
   const execs   = useAsync(signal => apiWithGroup(baseUrl, '/execucoes?page=1&page_size=6', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
   const procs   = useAsync(signal => apiWithGroup(baseUrl, '/processos?page=1&page_size=6', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
   const agends  = useAsync(signal => apiWithGroup(baseUrl, '/agendamentos', grupos, grupoAtual, { signal }), [baseUrl, grupos, grupoAtual]);
@@ -1953,7 +1992,7 @@ function DashboardPage({ baseUrl, toast, navigate, grupoAtual, grupos }) {
   }), [health.data, execs.data?.total, procs.data?.total, agends.data, recentExecutions.length, recentProcesses.length]);
 
   const isRefreshing = health.loading || execs.loading || procs.loading || agends.loading;
-  const apiOnline = stats.status === 'ok';
+  const apiOnline = String(stats.status || '').toLowerCase() === 'ok';
   const recentExecutionsTotal = execs.data?.total || recentExecutions.length;
   const recentProcessesTotal = procs.data?.total || recentProcesses.length;
   const recentStatusesNeedingAttention = [...recentExecutions, ...recentProcesses]
@@ -5627,13 +5666,21 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let alive = true;
     const check = async () => {
-      try { await api(baseUrl, '/health'); setApiStatus('ok'); }
-      catch { setApiStatus('err'); }
+      try {
+        const isOnline = await checkApiHealth(baseUrl);
+        if (alive) setApiStatus(isOnline ? 'ok' : 'err');
+      } catch {
+        if (alive) setApiStatus('err');
+      }
     };
     check();
     const iv = setInterval(check, 30000);
-    return () => clearInterval(iv);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
   }, [baseUrl]);
 
   useEffect(() => {
